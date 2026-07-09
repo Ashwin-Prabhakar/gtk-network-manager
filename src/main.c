@@ -688,6 +688,9 @@ static void apply_css(void){
         /* Strip default white backgrounds from list internals */
         "listbox, listbox > * { background: transparent; }"
         "scrolledwindow, viewport { background: transparent; }"
+        /* GtkListBoxRow has its own 'row' CSS node styled by Adwaita */
+        "row { background: transparent; padding: 0; }"
+        "row:hover, row:selected, row:focus { background: transparent; }"
 
         /* Card (network list container) */
         ".card { background: #19191a;"
