@@ -503,21 +503,66 @@ static void refresh_wifi_list(App *app)
         g_ptr_array_add(sorted, g_ptr_array_index(aps, i));
     g_ptr_array_sort(sorted, ap_sort_cb);
 
+    /* Deduplicate by SSID — keep strongest AP per name.
+       The active AP always wins for its SSID regardless of signal. */
+    GHashTable *seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    GPtrArray *unique = g_ptr_array_new();
+
+    NMAccessPoint *active_ap = nm_device_wifi_get_active_access_point(app->wifi_dev);
+    if (active_ap) {
+        char *ssid = ssid_to_string(nm_access_point_get_ssid(active_ap));
+        g_hash_table_add(seen, ssid); /* owned by hash table */
+        g_ptr_array_add(unique, active_ap);
+    }
+
     for (guint i = 0; i < sorted->len; i++) {
         NMAccessPoint *ap = g_ptr_array_index(sorted, i);
+        if (ap == active_ap)
+            continue;
+        char *ssid = ssid_to_string(nm_access_point_get_ssid(ap));
+        if (!g_hash_table_contains(seen, ssid)) {
+            g_hash_table_add(seen, g_strdup(ssid));
+            g_ptr_array_add(unique, ap);
+        }
+        g_free(ssid);
+    }
+    g_hash_table_destroy(seen);
+
+    for (guint i = 0; i < unique->len; i++) {
+        NMAccessPoint *ap = g_ptr_array_index(unique, i);
         GtkWidget *row = make_ap_row(app, ap);
         gtk_list_box_append(GTK_LIST_BOX(app->listbox), row);
     }
 
-    char *msg = g_strdup_printf("%u network(s) found", sorted->len);
+    char *msg = g_strdup_printf("%u network(s) found", unique->len);
     set_status(app, msg);
     g_free(msg);
+    g_ptr_array_unref(unique);
     g_ptr_array_unref(sorted);
+}
+
+static void background_scan_done_cb(GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    App *app = user_data;
+    GError *error = NULL;
+    gboolean ok = nm_device_wifi_request_scan_finish(NM_DEVICE_WIFI(source), res, &error);
+    g_clear_error(&error); /* silently ignore rate-limit and other errors */
+    if (ok && app->window)
+        schedule_delayed_refresh(app, 1500);
 }
 
 static gboolean refresh_timer_cb(gpointer user_data)
 {
-    refresh_wifi_list((App *)user_data);
+    App *app = user_data;
+    if (!app->window)
+        return G_SOURCE_REMOVE;
+    /* Refresh display from NM's cached AP list immediately */
+    refresh_wifi_list(app);
+    /* Also request a fresh scan; NM rate-limits to ~30 s when connected,
+       so most calls are no-ops — that's fine, the display still updates */
+    if (app->wifi_dev)
+        nm_device_wifi_request_scan_async(app->wifi_dev, app->cancellable,
+                                          background_scan_done_cb, app);
     return G_SOURCE_CONTINUE;
 }
 
@@ -639,6 +684,10 @@ static void apply_css(void){
         /* Window & shell */
         "window { background: #0a0a0a; color: #ffffff; }"
         ".app-shell { background: #0a0a0a; }"
+
+        /* Strip default white backgrounds from list internals */
+        "listbox, listbox > * { background: transparent; }"
+        "scrolledwindow, viewport { background: transparent; }"
 
         /* Card (network list container) */
         ".card { background: #19191a;"
@@ -908,7 +957,7 @@ static void app_activate(GtkApplication *gtk_app, gpointer user_data)
     build_ui(app);
     refresh_wifi_list(app);
 
-    app->refresh_timer_id = g_timeout_add_seconds(10, refresh_timer_cb, app);
+    app->refresh_timer_id = g_timeout_add_seconds(30, refresh_timer_cb, app);
     gtk_window_present(GTK_WINDOW(app->window));
 }
 
