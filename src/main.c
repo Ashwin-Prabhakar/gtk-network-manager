@@ -835,10 +835,11 @@ static void build_ui(App *app)
 
     app->listbox = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(app->listbox), GTK_SELECTION_NONE);
+    gtk_widget_remove_css_class(app->listbox, "view"); /* prevents Adwaita white background */
     gtk_widget_set_vexpand(app->listbox, TRUE);
 
     GtkWidget *scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_NEVER);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), app->listbox);
     gtk_widget_set_vexpand(scroll, TRUE);
     gtk_box_append(GTK_BOX(card), scroll);
