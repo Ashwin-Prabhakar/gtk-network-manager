@@ -1,5 +1,5 @@
 /*
- * gtk-nm-manager - Touch-first GTK4/libnm Wi-Fi manager for Weston/Wayland.
+ * gtk-network-manager - Touch-first GTK4/libnm Wi-Fi manager for Weston/Wayland.
  *
  * Runtime target:
  *   GTK4 Wayland client -> Weston DRM backend -> KMS/DRM
@@ -25,6 +25,17 @@ typedef struct {
     GtkWidget *subtitle_label;
     GtkWidget *listbox;
     GtkWidget *spinner;
+
+    /* Inline password panel (no floating windows) */
+    GtkWidget *password_revealer;
+    GtkWidget *password_title;
+    GtkWidget *password_entry;
+    NMAccessPoint *pending_ap;
+
+    /* Inline PSK reveal panel */
+    GtkWidget *psk_revealer;
+    GtkWidget *psk_ssid_label;
+    GtkWidget *psk_label;
 
     NMClient *client;
     NMDeviceWifi *wifi_dev;
@@ -114,21 +125,24 @@ static void set_status(App *app, const char *text)
     gtk_label_set_text(GTK_LABEL(app->status_label), text ? text : "");
 }
 
-/* GTK4-friendly async password dialog state. */
-typedef struct {
-    App *app;
-    NMAccessPoint *ap;
-    GtkWidget *dialog;
-    GtkWidget *entry;
-    char *ssid;
-} PasswordDialogCtx;
-
-static void password_ctx_free(PasswordDialogCtx *ctx)
+static void hide_password_panel(App *app)
 {
-    if (!ctx) return;
-    g_clear_object(&ctx->ap);
-    g_free(ctx->ssid);
-    g_free(ctx);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(app->password_revealer), FALSE);
+    gtk_editable_set_text(GTK_EDITABLE(app->password_entry), "");
+    g_clear_object(&app->pending_ap);
+}
+
+static void show_password_panel(App *app, NMAccessPoint *ap, const char *ssid)
+{
+    g_set_object(&app->pending_ap, ap);
+
+    char *title = g_strdup_printf("Connect to %s", ssid);
+    gtk_label_set_text(GTK_LABEL(app->password_title), title);
+    g_free(title);
+
+    gtk_editable_set_text(GTK_EDITABLE(app->password_entry), "");
+    gtk_revealer_set_reveal_child(GTK_REVEALER(app->password_revealer), TRUE);
+    gtk_widget_grab_focus(app->password_entry);
 }
 
 static void activate_done_cb(GObject *source, GAsyncResult *res, gpointer user_data)
@@ -219,86 +233,29 @@ static void connect_to_ap(App *app, NMAccessPoint *ap, const char *password)
 
 static void password_cancel_clicked(GtkButton *button, gpointer user_data)
 {
-    PasswordDialogCtx *ctx = user_data;
-    gtk_window_destroy(GTK_WINDOW(ctx->dialog));
-    password_ctx_free(ctx);
+    (void)button;
+    hide_password_panel((App *)user_data);
 }
 
 static void password_connect_clicked(GtkButton *button, gpointer user_data)
 {
-    PasswordDialogCtx *ctx = user_data;
-    const char *password = gtk_editable_get_text(GTK_EDITABLE(ctx->entry));
+    (void)button;
+    App *app = user_data;
+    const char *password = gtk_editable_get_text(GTK_EDITABLE(app->password_entry));
 
     if (!password || password[0] == '\0') {
-        set_status(ctx->app, "Password required");
+        set_status(app, "Password required");
         return;
     }
 
-    connect_to_ap(ctx->app, ctx->ap, password);
-    gtk_window_destroy(GTK_WINDOW(ctx->dialog));
-    password_ctx_free(ctx);
+    connect_to_ap(app, app->pending_ap, password);
+    hide_password_panel(app);
 }
 
-static void show_password_dialog(App *app, NMAccessPoint *ap, const char *ssid)
+static void password_entry_activate(GtkEntry *entry, gpointer user_data)
 {
-    PasswordDialogCtx *ctx = g_new0(PasswordDialogCtx, 1);
-    ctx->app = app;
-    ctx->ap = g_object_ref(ap);
-    ctx->ssid = g_strdup(ssid);
-
-    GtkWidget *dialog = gtk_window_new();
-    ctx->dialog = dialog;
-    gtk_window_set_title(GTK_WINDOW(dialog), "Wi-Fi Password");
-    gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(app->window));
-    gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
-    gtk_window_set_default_size(GTK_WINDOW(dialog), 540, 300);
-    gtk_widget_add_css_class(dialog, "password-dialog");
-
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
-    gtk_widget_set_margin_top(box, 28);
-    gtk_widget_set_margin_bottom(box, 28);
-    gtk_widget_set_margin_start(box, 28);
-    gtk_widget_set_margin_end(box, 28);
-    gtk_window_set_child(GTK_WINDOW(dialog), box);
-
-    char *title = g_strdup_printf("Connect to %s", ssid);
-    GtkWidget *title_label = gtk_label_new(title);
-    gtk_widget_add_css_class(title_label, "dialog-title");
-    gtk_widget_set_halign(title_label, GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(box), title_label);
-    g_free(title);
-
-    GtkWidget *hint = gtk_label_new("Enter the network password to join this secured Wi-Fi network.");
-    gtk_widget_add_css_class(hint, "muted");
-    gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
-    gtk_widget_set_halign(hint, GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(box), hint);
-
-    ctx->entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(ctx->entry), "Password");
-    gtk_entry_set_visibility(GTK_ENTRY(ctx->entry), FALSE);
-    gtk_entry_set_input_purpose(GTK_ENTRY(ctx->entry), GTK_INPUT_PURPOSE_PASSWORD);
-    gtk_entry_set_activates_default(GTK_ENTRY(ctx->entry), TRUE);
-    gtk_widget_add_css_class(ctx->entry, "password-entry");
-    gtk_box_append(GTK_BOX(box), ctx->entry);
-
-    GtkWidget *buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    gtk_widget_set_halign(buttons, GTK_ALIGN_END);
-    gtk_box_append(GTK_BOX(box), buttons);
-
-    GtkWidget *cancel = gtk_button_new_with_label("Cancel");
-    GtkWidget *connect = gtk_button_new_with_label("Connect");
-    gtk_widget_add_css_class(connect, "suggested-action");
-    gtk_widget_add_css_class(cancel, "flat");
-    gtk_box_append(GTK_BOX(buttons), cancel);
-    gtk_box_append(GTK_BOX(buttons), connect);
-
-    g_signal_connect(cancel, "clicked", G_CALLBACK(password_cancel_clicked), ctx);
-    g_signal_connect(connect, "clicked", G_CALLBACK(password_connect_clicked), ctx);
-    g_signal_connect(ctx->entry, "activate", G_CALLBACK(password_connect_clicked), ctx);
-
-    gtk_window_present(GTK_WINDOW(dialog));
-    gtk_widget_grab_focus(ctx->entry);
+    (void)entry;
+    password_connect_clicked(NULL, user_data);
 }
 
 static void ap_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
@@ -314,9 +271,80 @@ static void ap_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_
     if (g_strcmp0(sec, "Open") == 0) {
         connect_to_ap(app, ap, NULL);
     } else {
-        show_password_dialog(app, ap, ssid);
+        show_password_panel(app, ap, ssid);
     }
     g_free(ssid);
+}
+
+static void psk_hide_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    App *app = user_data;
+    gtk_revealer_set_reveal_child(GTK_REVEALER(app->psk_revealer), FALSE);
+    gtk_label_set_text(GTK_LABEL(app->psk_label), "");
+}
+
+static void secrets_cb(GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    App *app = user_data;
+    GError *error = NULL;
+
+    GVariant *secrets = nm_remote_connection_get_secrets_finish(
+        NM_REMOTE_CONNECTION(source), res, &error);
+    if (!secrets) {
+        set_status(app, error ? error->message : "Failed to retrieve secrets");
+        g_clear_error(&error);
+        return;
+    }
+
+    const char *psk = NULL;
+    GVariant *wifi_sec = g_variant_lookup_value(
+        secrets, NM_SETTING_WIRELESS_SECURITY_SETTING_NAME, NULL);
+    if (wifi_sec) {
+        g_variant_lookup(wifi_sec, NM_SETTING_WIRELESS_SECURITY_PSK, "&s", &psk);
+        g_variant_unref(wifi_sec);
+    }
+
+    if (psk && psk[0] != '\0') {
+        gtk_label_set_text(GTK_LABEL(app->psk_label), psk);
+        gtk_revealer_set_reveal_child(GTK_REVEALER(app->psk_revealer), TRUE);
+    } else {
+        set_status(app, "No saved password found for this network");
+    }
+    g_variant_unref(secrets);
+}
+
+static void show_psk_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    App *app = user_data;
+
+    if (!app->wifi_dev)
+        return;
+
+    NMActiveConnection *active_conn = nm_device_get_active_connection(NM_DEVICE(app->wifi_dev));
+    if (!active_conn) {
+        set_status(app, "No active connection");
+        return;
+    }
+
+    NMConnection *conn = NM_CONNECTION(nm_active_connection_get_connection(active_conn));
+    if (!conn || !NM_IS_REMOTE_CONNECTION(conn)) {
+        set_status(app, "Cannot access connection profile");
+        return;
+    }
+
+    /* Show the SSID in the panel header */
+    NMAccessPoint *active_ap = nm_device_wifi_get_active_access_point(app->wifi_dev);
+    char *ssid = ssid_to_string(active_ap ? nm_access_point_get_ssid(active_ap) : NULL);
+    char *title = g_strdup_printf("Password for %s", ssid);
+    gtk_label_set_text(GTK_LABEL(app->psk_ssid_label), title);
+    g_free(title);
+    g_free(ssid);
+
+    nm_remote_connection_get_secrets_async(NM_REMOTE_CONNECTION(conn),
+                                           NM_SETTING_WIRELESS_SECURITY_SETTING_NAME,
+                                           NULL, secrets_cb, app);
 }
 
 static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
@@ -368,6 +396,14 @@ static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
     gtk_widget_add_css_class(pct_label, "muted");
     gtk_box_append(GTK_BOX(outer), pct_label);
     g_free(pct);
+
+    if (active) {
+        GtkWidget *show_btn = gtk_button_new_with_label("Show Password");
+        gtk_widget_add_css_class(show_btn, "flat");
+        gtk_widget_set_valign(show_btn, GTK_ALIGN_CENTER);
+        gtk_box_append(GTK_BOX(outer), show_btn);
+        g_signal_connect(show_btn, "clicked", G_CALLBACK(show_psk_clicked), app);
+    }
 
     g_object_set_data_full(G_OBJECT(row), "ap", g_object_ref(ap), g_object_unref);
     g_free(ssid);
@@ -515,7 +551,9 @@ static void apply_css(void)
         ".status-pill { background: #020617; border-radius: 999px; padding: 10px 14px; color: #cbd5e1; }"
         ".dialog-title { font-size: 26px; font-weight: 800; color: #f8fafc; }"
         ".password-entry { min-height: 54px; font-size: 20px; border-radius: 14px; }"
-        ".password-dialog { background: #111827; color: #e5e7eb; }";
+        ".password-panel { background: #111827; border-radius: 22px; padding: 24px; }"
+        ".psk-display { font-size: 28px; font-weight: 700; color: #34d399; font-family: monospace; letter-spacing: 2px; }"
+        ".psk-panel { background: #0d2137; border-radius: 22px; padding: 24px; border: 2px solid #1e3a5f; }";
 
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_data(provider, css, -1);
@@ -585,10 +623,99 @@ static void build_ui(App *app)
     gtk_widget_set_vexpand(scroll, TRUE);
     gtk_box_append(GTK_BOX(card), scroll);
 
+    GtkWidget *bottom_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_box_append(GTK_BOX(shell), bottom_bar);
+
     app->status_label = gtk_label_new("Ready");
     gtk_widget_add_css_class(app->status_label, "status-pill");
     gtk_widget_set_halign(app->status_label, GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(shell), app->status_label);
+    gtk_widget_set_hexpand(app->status_label, TRUE);
+    gtk_box_append(GTK_BOX(bottom_bar), app->status_label);
+
+    GtkWidget *close_btn = gtk_button_new_with_label("Close");
+    gtk_widget_add_css_class(close_btn, "primary-button");
+    gtk_widget_add_css_class(close_btn, "destructive-action");
+    gtk_widget_set_halign(close_btn, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(bottom_bar), close_btn);
+    g_signal_connect_swapped(close_btn, "clicked", G_CALLBACK(gtk_window_destroy), app->window);
+
+    /* Inline password panel — slides in, no floating window */
+    app->password_revealer = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(app->password_revealer),
+                                     GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(app->password_revealer), FALSE);
+    gtk_box_append(GTK_BOX(shell), app->password_revealer);
+
+    GtkWidget *panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+    gtk_widget_add_css_class(panel, "password-panel");
+    gtk_revealer_set_child(GTK_REVEALER(app->password_revealer), panel);
+
+    app->password_title = gtk_label_new("");
+    gtk_widget_add_css_class(app->password_title, "dialog-title");
+    gtk_widget_set_halign(app->password_title, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(panel), app->password_title);
+
+    GtkWidget *hint = gtk_label_new("Enter the network password to join this secured Wi-Fi network.");
+    gtk_widget_add_css_class(hint, "muted");
+    gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+    gtk_widget_set_halign(hint, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(panel), hint);
+
+    app->password_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(app->password_entry), "Password");
+    gtk_entry_set_visibility(GTK_ENTRY(app->password_entry), FALSE);
+    gtk_entry_set_input_purpose(GTK_ENTRY(app->password_entry), GTK_INPUT_PURPOSE_PASSWORD);
+    gtk_widget_add_css_class(app->password_entry, "password-entry");
+    gtk_box_append(GTK_BOX(panel), app->password_entry);
+
+    GtkWidget *buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_widget_set_halign(buttons, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(panel), buttons);
+
+    GtkWidget *cancel = gtk_button_new_with_label("Cancel");
+    GtkWidget *connect_btn = gtk_button_new_with_label("Connect");
+    gtk_widget_add_css_class(connect_btn, "suggested-action");
+    gtk_widget_add_css_class(connect_btn, "primary-button");
+    gtk_widget_add_css_class(cancel, "flat");
+    gtk_box_append(GTK_BOX(buttons), cancel);
+    gtk_box_append(GTK_BOX(buttons), connect_btn);
+
+    g_signal_connect(cancel, "clicked", G_CALLBACK(password_cancel_clicked), app);
+    g_signal_connect(connect_btn, "clicked", G_CALLBACK(password_connect_clicked), app);
+    g_signal_connect(app->password_entry, "activate", G_CALLBACK(password_entry_activate), app);
+
+    /* Inline PSK reveal panel */
+    app->psk_revealer = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(app->psk_revealer),
+                                     GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(app->psk_revealer), FALSE);
+    gtk_box_append(GTK_BOX(shell), app->psk_revealer);
+
+    GtkWidget *psk_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
+    gtk_widget_add_css_class(psk_panel, "psk-panel");
+    gtk_revealer_set_child(GTK_REVEALER(app->psk_revealer), psk_panel);
+
+    app->psk_ssid_label = gtk_label_new("");
+    gtk_widget_add_css_class(app->psk_ssid_label, "dialog-title");
+    gtk_widget_set_halign(app->psk_ssid_label, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(psk_panel), app->psk_ssid_label);
+
+    GtkWidget *psk_hint = gtk_label_new("Saved Wi-Fi password");
+    gtk_widget_add_css_class(psk_hint, "muted");
+    gtk_widget_set_halign(psk_hint, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(psk_panel), psk_hint);
+
+    app->psk_label = gtk_label_new("");
+    gtk_widget_add_css_class(app->psk_label, "psk-display");
+    gtk_widget_set_halign(app->psk_label, GTK_ALIGN_START);
+    gtk_label_set_selectable(GTK_LABEL(app->psk_label), TRUE);
+    gtk_box_append(GTK_BOX(psk_panel), app->psk_label);
+
+    GtkWidget *psk_hide_btn = gtk_button_new_with_label("Hide");
+    gtk_widget_add_css_class(psk_hide_btn, "flat");
+    gtk_widget_set_halign(psk_hide_btn, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(psk_panel), psk_hide_btn);
+    g_signal_connect(psk_hide_btn, "clicked", G_CALLBACK(psk_hide_clicked), app);
 
     g_signal_connect(app->scan_button, "clicked", G_CALLBACK(scan_clicked), app);
     g_signal_connect(app->listbox, "row-activated", G_CALLBACK(ap_row_activated), app);
@@ -620,6 +747,7 @@ static void app_shutdown(GApplication *gapp, gpointer user_data)
     App *app = user_data;
     if (app->refresh_timer_id)
         g_source_remove(app->refresh_timer_id);
+    g_clear_object(&app->pending_ap);
     g_clear_object(&app->client);
 }
 
@@ -628,7 +756,7 @@ int main(int argc, char **argv)
     App app;
     memset(&app, 0, sizeof(app));
 
-    GtkApplication *gtk_app = gtk_application_new(APP_ID, G_APPLICATION_DEFAULT_FLAGS);
+    GtkApplication *gtk_app = gtk_application_new(APP_ID, G_APPLICATION_FLAGS_NONE);
     g_signal_connect(gtk_app, "activate", G_CALLBACK(app_activate), &app);
     g_signal_connect(gtk_app, "shutdown", G_CALLBACK(app_shutdown), &app);
 
