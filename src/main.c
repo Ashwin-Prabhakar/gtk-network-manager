@@ -288,6 +288,9 @@ static void ap_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_
     if (!ap)
         return;
 
+    if (ap_is_active(app, ap))
+        return;
+
     char *ssid = ssid_to_string(nm_access_point_get_ssid(ap));
     const char *sec = security_to_string(ap);
 
@@ -435,6 +438,7 @@ static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
     }
 
     g_object_set_data_full(G_OBJECT(row), "ap", g_object_ref(ap), g_object_unref);
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), !active);
     g_free(ssid);
     return row;
 }
@@ -572,6 +576,29 @@ static gboolean wifi_switch_state_set(GtkSwitch *sw, gboolean state, gpointer us
     return FALSE;
 }
 
+static void on_outside_press(GtkGestureClick *gesture, int n_press, double x, double y, gpointer user_data)
+{
+    (void)n_press;
+    App *app = user_data;
+
+    if (!gtk_revealer_get_reveal_child(GTK_REVEALER(app->password_revealer)))
+        return;
+
+    GtkWidget *panel = gtk_revealer_get_child(GTK_REVEALER(app->password_revealer));
+    graphene_point_t wpt = GRAPHENE_POINT_INIT((float)x, (float)y);
+    graphene_point_t ppt;
+
+    if (!gtk_widget_compute_point(
+            gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)),
+            panel, &wpt, &ppt))
+        return;
+
+    if (ppt.x < 0 || ppt.y < 0 ||
+        ppt.x > gtk_widget_get_width(panel) ||
+        ppt.y > gtk_widget_get_height(panel))
+        hide_password_panel(app);
+}
+
 static void on_window_destroy(GtkWidget *widget, gpointer user_data)
 {
     (void)widget;
@@ -630,6 +657,13 @@ static void build_ui(App *app)
     gtk_window_set_title(GTK_WINDOW(app->window), "Network Settings");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 900, 620);
     g_signal_connect(app->window, "destroy", G_CALLBACK(on_window_destroy), app);
+
+    GtkGesture *click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);   /* any mouse button */
+    gtk_gesture_single_set_touch_only(GTK_GESTURE_SINGLE(click), FALSE); /* mouse + touch */
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click), GTK_PHASE_CAPTURE);
+    g_signal_connect(click, "pressed", G_CALLBACK(on_outside_press), app);
+    gtk_widget_add_controller(app->window, GTK_EVENT_CONTROLLER(click));
 
     GtkWidget *shell = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_widget_add_css_class(shell, "app-shell");
