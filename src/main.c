@@ -98,14 +98,6 @@ static const char *security_to_string(NMAccessPoint *ap)
     return "Unknown";
 }
 
-static const char *signal_bars(guint8 strength)
-{
-    if (strength >= 80) return "▂▄▆█";
-    if (strength >= 60) return "▂▄▆▁";
-    if (strength >= 35) return "▂▄▁▁";
-    if (strength >= 15) return "▂▁▁▁";
-    return "▁▁▁▁";
-}
 
 static NMDeviceWifi *find_first_wifi_device(App *app)
 {
@@ -428,13 +420,9 @@ static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
     gtk_box_append(GTK_BOX(text_box), sub_label);
     g_free(sub);
 
-    GtkWidget *bars = gtk_label_new(signal_bars(strength));
-    gtk_widget_add_css_class(bars, "signal-bars");
-    gtk_box_append(GTK_BOX(outer), bars);
-
     char *pct = g_strdup_printf("%u%%", strength);
     GtkWidget *pct_label = gtk_label_new(pct);
-    gtk_widget_add_css_class(pct_label, "muted");
+    gtk_widget_add_css_class(pct_label, "signal-strength");
     gtk_box_append(GTK_BOX(outer), pct_label);
     g_free(pct);
 
@@ -617,7 +605,7 @@ static void apply_css(void){
         ".connected-row { background: #064e3b; }"
         ".wifi-icon { font-size: 26px; color: #38bdf8; }"
         ".connected-icon { font-size: 28px; color: #34d399; font-weight: 900; }"
-        ".signal-bars { font-size: 22px; color: #38bdf8; letter-spacing: 1px; }"
+        ".signal-strength { font-size: 15px; font-weight: 700; color: #38bdf8; min-width: 48px; }"
         ".primary-button { min-height: 48px; padding-left: 22px; padding-right: 22px; border-radius: 14px; font-weight: 700; }"
         ".status-pill { background: #020617; border-radius: 999px; padding: 10px 14px; color: #cbd5e1; }"
         ".dialog-title { font-size: 26px; font-weight: 800; color: #f8fafc; }"
