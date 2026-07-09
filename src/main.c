@@ -22,9 +22,12 @@ typedef struct {
     GtkWidget *wifi_switch;
     GtkWidget *scan_button;
     GtkWidget *status_label;
-    GtkWidget *subtitle_label;
     GtkWidget *listbox;
     GtkWidget *spinner;
+
+    /* Connected AP area inside top card */
+    GtkWidget *connected_box;
+    GtkWidget *connected_sep;
 
     /* Inline password panel (no floating windows) */
     GtkWidget *password_revealer;
@@ -98,6 +101,13 @@ static const char *security_to_string(NMAccessPoint *ap)
     return "Unknown";
 }
 
+static const char *signal_icon_name(guint8 strength)
+{
+    if (strength > 75) return "network-wireless-signal-excellent-symbolic";
+    if (strength > 50) return "network-wireless-signal-good-symbolic";
+    if (strength > 25) return "network-wireless-signal-ok-symbolic";
+    return "network-wireless-signal-weak-symbolic";
+}
 
 static NMDeviceWifi *find_first_wifi_device(App *app)
 {
@@ -149,7 +159,7 @@ static void show_password_panel(App *app, NMAccessPoint *ap, const char *ssid)
 {
     g_set_object(&app->pending_ap, ap);
 
-    char *title = g_strdup_printf("Connect to %s", ssid);
+    char *title = g_strdup_printf("Connect to \"%s\"", ssid);
     gtk_label_set_text(GTK_LABEL(app->password_title), title);
     g_free(title);
 
@@ -283,6 +293,7 @@ static void password_entry_activate(GtkEntry *entry, gpointer user_data)
 
 static void ap_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 {
+    (void)box;
     App *app = user_data;
     NMAccessPoint *ap = g_object_get_data(G_OBJECT(row), "ap");
     if (!ap)
@@ -370,10 +381,9 @@ static void show_psk_clicked(GtkButton *button, gpointer user_data)
         return;
     }
 
-    /* Show the SSID in the panel header */
     NMAccessPoint *active_ap = nm_device_wifi_get_active_access_point(app->wifi_dev);
     char *ssid = ssid_to_string(active_ap ? nm_access_point_get_ssid(active_ap) : NULL);
-    char *title = g_strdup_printf("Password for %s", ssid);
+    char *title = g_strdup_printf("Password for \"%s\"", ssid);
     gtk_label_set_text(GTK_LABEL(app->psk_ssid_label), title);
     g_free(title);
     g_free(ssid);
@@ -383,70 +393,139 @@ static void show_psk_clicked(GtkButton *button, gpointer user_data)
                                            app->cancellable, secrets_cb, app);
 }
 
+/* Build an iOS-style row for the networks listbox (non-connected APs) */
 static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
+{
+    (void)app;
+    char *ssid = ssid_to_string(nm_access_point_get_ssid(ap));
+    guint8 strength = nm_access_point_get_strength(ap);
+    const char *sec = security_to_string(ap);
+    gboolean is_open = g_strcmp0(sec, "Open") == 0;
+
+    GtkWidget *row = gtk_list_box_row_new();
+
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_margin_start(hbox, 16);
+    gtk_widget_set_margin_end(hbox, 12);
+    gtk_widget_set_margin_top(hbox, 11);
+    gtk_widget_set_margin_bottom(hbox, 11);
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), hbox);
+
+    /* SSID label (expands) */
+    GtkWidget *ssid_lbl = gtk_label_new(ssid);
+    gtk_widget_add_css_class(ssid_lbl, "ssid-label");
+    gtk_widget_set_halign(ssid_lbl, GTK_ALIGN_START);
+    gtk_widget_set_valign(ssid_lbl, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(ssid_lbl, TRUE);
+    gtk_label_set_ellipsize(GTK_LABEL(ssid_lbl), PANGO_ELLIPSIZE_END);
+    gtk_box_append(GTK_BOX(hbox), ssid_lbl);
+
+    /* Lock icon (secured networks only) */
+    if (!is_open) {
+        GtkWidget *lock = gtk_image_new_from_icon_name("changes-prevent-symbolic");
+        gtk_image_set_pixel_size(GTK_IMAGE(lock), 14);
+        gtk_widget_add_css_class(lock, "row-icon");
+        gtk_widget_set_valign(lock, GTK_ALIGN_CENTER);
+        gtk_box_append(GTK_BOX(hbox), lock);
+    }
+
+    /* WiFi signal strength icon */
+    GtkWidget *sig_img = gtk_image_new_from_icon_name(signal_icon_name(strength));
+    gtk_image_set_pixel_size(GTK_IMAGE(sig_img), 18);
+    gtk_widget_add_css_class(sig_img, "row-icon");
+    gtk_widget_set_valign(sig_img, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(hbox), sig_img);
+
+    /* Info button (blue ⓘ circle) */
+    GtkWidget *info_img = gtk_image_new_from_icon_name("dialog-information-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(info_img), 20);
+    gtk_widget_add_css_class(info_img, "info-icon");
+    GtkWidget *info_btn = gtk_button_new();
+    gtk_button_set_child(GTK_BUTTON(info_btn), info_img);
+    gtk_widget_add_css_class(info_btn, "flat");
+    gtk_widget_add_css_class(info_btn, "info-btn");
+    gtk_widget_set_valign(info_btn, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(hbox), info_btn);
+
+    g_object_set_data_full(G_OBJECT(row), "ap", g_object_ref(ap), g_object_unref);
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), TRUE);
+    g_free(ssid);
+    return row;
+}
+
+/* Build the content for the connected AP shown inside the top card */
+static GtkWidget *make_connected_row_content(App *app, NMAccessPoint *ap)
 {
     char *ssid = ssid_to_string(nm_access_point_get_ssid(ap));
     guint8 strength = nm_access_point_get_strength(ap);
     const char *sec = security_to_string(ap);
-    gboolean active = ap_is_active(app, ap);
-
-    GtkWidget *row = gtk_list_box_row_new();
-    gtk_widget_add_css_class(row, "ap-row");
-    if (active)
-        gtk_widget_add_css_class(row, "connected-row");
-
-    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
-    gtk_widget_set_margin_top(outer, 14);
-    gtk_widget_set_margin_bottom(outer, 14);
-    gtk_widget_set_margin_start(outer, 18);
-    gtk_widget_set_margin_end(outer, 18);
-    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), outer);
-
-    GtkWidget *icon = gtk_label_new(active ? "✓" : "📶");
-    gtk_widget_add_css_class(icon, active ? "connected-icon" : "wifi-icon");
-    gtk_box_append(GTK_BOX(outer), icon);
-
-    GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_widget_set_hexpand(text_box, TRUE);
-    gtk_box_append(GTK_BOX(outer), text_box);
-
-    GtkWidget *ssid_label = gtk_label_new(ssid);
-    gtk_widget_add_css_class(ssid_label, "ssid");
-    gtk_widget_set_halign(ssid_label, GTK_ALIGN_START);
-    gtk_label_set_ellipsize(GTK_LABEL(ssid_label), PANGO_ELLIPSIZE_END);
-    gtk_box_append(GTK_BOX(text_box), ssid_label);
-
-    char *sub = g_strdup_printf("%s · %u MHz%s", sec, nm_access_point_get_frequency(ap), active ? " · Connected" : "");
-    GtkWidget *sub_label = gtk_label_new(sub);
-    gtk_widget_add_css_class(sub_label, "muted");
-    gtk_widget_set_halign(sub_label, GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(text_box), sub_label);
-    g_free(sub);
-
-    char *pct = g_strdup_printf("%u%%", strength);
-    GtkWidget *pct_label = gtk_label_new(pct);
-    gtk_widget_add_css_class(pct_label, "signal-strength");
-    gtk_box_append(GTK_BOX(outer), pct_label);
-    g_free(pct);
-
     gboolean is_open = g_strcmp0(sec, "Open") == 0;
-    GtkWidget *sec_badge = gtk_label_new(is_open ? "Open" : "Secured");
-    gtk_widget_add_css_class(sec_badge, is_open ? "badge-open" : "badge-secured");
-    gtk_widget_set_valign(sec_badge, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(outer), sec_badge);
 
-    if (active && !is_open) {
-        GtkWidget *show_btn = gtk_button_new_with_label("Show Password");
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_margin_start(hbox, 16);
+    gtk_widget_set_margin_end(hbox, 12);
+    gtk_widget_set_margin_top(hbox, 11);
+    gtk_widget_set_margin_bottom(hbox, 11);
+
+    /* Blue checkmark on the left */
+    GtkWidget *chk_img = gtk_image_new_from_icon_name("object-select-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(chk_img), 18);
+    gtk_widget_add_css_class(chk_img, "connected-check-icon");
+    gtk_widget_set_valign(chk_img, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(hbox), chk_img);
+
+    /* SSID */
+    GtkWidget *ssid_lbl = gtk_label_new(ssid);
+    gtk_widget_add_css_class(ssid_lbl, "ssid-label");
+    gtk_widget_set_halign(ssid_lbl, GTK_ALIGN_START);
+    gtk_widget_set_valign(ssid_lbl, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(ssid_lbl, TRUE);
+    gtk_label_set_ellipsize(GTK_LABEL(ssid_lbl), PANGO_ELLIPSIZE_END);
+    gtk_box_append(GTK_BOX(hbox), ssid_lbl);
+
+    /* Lock icon */
+    if (!is_open) {
+        GtkWidget *lock = gtk_image_new_from_icon_name("changes-prevent-symbolic");
+        gtk_image_set_pixel_size(GTK_IMAGE(lock), 14);
+        gtk_widget_add_css_class(lock, "row-icon");
+        gtk_widget_set_valign(lock, GTK_ALIGN_CENTER);
+        gtk_box_append(GTK_BOX(hbox), lock);
+    }
+
+    /* WiFi signal icon */
+    GtkWidget *sig_img = gtk_image_new_from_icon_name(signal_icon_name(strength));
+    gtk_image_set_pixel_size(GTK_IMAGE(sig_img), 18);
+    gtk_widget_add_css_class(sig_img, "row-icon");
+    gtk_widget_set_valign(sig_img, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(hbox), sig_img);
+
+    /* Info button */
+    GtkWidget *info_img = gtk_image_new_from_icon_name("dialog-information-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(info_img), 20);
+    gtk_widget_add_css_class(info_img, "info-icon");
+    GtkWidget *info_btn = gtk_button_new();
+    gtk_button_set_child(GTK_BUTTON(info_btn), info_img);
+    gtk_widget_add_css_class(info_btn, "flat");
+    gtk_widget_add_css_class(info_btn, "info-btn");
+    gtk_widget_set_valign(info_btn, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(hbox), info_btn);
+
+    /* Show Password button for secured connected networks */
+    if (!is_open) {
+        GtkWidget *pw_img = gtk_image_new_from_icon_name("dialog-password-symbolic");
+        gtk_image_set_pixel_size(GTK_IMAGE(pw_img), 16);
+        GtkWidget *show_btn = gtk_button_new();
+        gtk_button_set_child(GTK_BUTTON(show_btn), pw_img);
         gtk_widget_add_css_class(show_btn, "flat");
+        gtk_widget_add_css_class(show_btn, "info-btn");
         gtk_widget_set_valign(show_btn, GTK_ALIGN_CENTER);
-        gtk_box_append(GTK_BOX(outer), show_btn);
+        gtk_widget_set_tooltip_text(show_btn, "Show saved password");
+        gtk_box_append(GTK_BOX(hbox), show_btn);
         g_signal_connect(show_btn, "clicked", G_CALLBACK(show_psk_clicked), app);
     }
 
-    g_object_set_data_full(G_OBJECT(row), "ap", g_object_ref(ap), g_object_unref);
-    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), !active);
     g_free(ssid);
-    return row;
+    return hbox;
 }
 
 static gint ap_sort_cb(gconstpointer a, gconstpointer b)
@@ -468,28 +547,39 @@ static void clear_listbox(GtkWidget *listbox)
     }
 }
 
+static void clear_box_children(GtkWidget *box)
+{
+    GtkWidget *child;
+    while ((child = gtk_widget_get_first_child(box)) != NULL)
+        gtk_widget_unparent(child);
+}
+
 static void refresh_wifi_list(App *app)
 {
     clear_listbox(app->listbox);
+    clear_box_children(app->connected_box);
+    gtk_widget_set_visible(app->connected_sep, FALSE);
 
     app->wifi_dev = find_first_wifi_device(app);
     if (!app->wifi_dev) {
-        gtk_label_set_text(GTK_LABEL(app->subtitle_label), "No Wi-Fi interface detected");
-        set_status(app, "Check WLAN driver, firmware, and NetworkManager device state");
+        set_status(app, "No Wi-Fi interface detected");
         return;
     }
 
-    const char *iface = nm_device_get_iface(NM_DEVICE(app->wifi_dev));
     gboolean enabled = nm_client_wireless_get_enabled(app->client);
     gtk_switch_set_active(GTK_SWITCH(app->wifi_switch), enabled);
-
-    char *subtitle = g_strdup_printf("Interface: %s", iface ? iface : "wlan");
-    gtk_label_set_text(GTK_LABEL(app->subtitle_label), subtitle);
-    g_free(subtitle);
 
     if (!enabled) {
         set_status(app, "Wi-Fi is disabled");
         return;
+    }
+
+    /* Show connected AP in top card */
+    NMAccessPoint *active_ap = nm_device_wifi_get_active_access_point(app->wifi_dev);
+    if (active_ap) {
+        gtk_widget_set_visible(app->connected_sep, TRUE);
+        GtkWidget *conn_content = make_connected_row_content(app, active_ap);
+        gtk_box_append(GTK_BOX(app->connected_box), conn_content);
     }
 
     const GPtrArray *aps = nm_device_wifi_get_access_points(app->wifi_dev);
@@ -503,16 +593,13 @@ static void refresh_wifi_list(App *app)
         g_ptr_array_add(sorted, g_ptr_array_index(aps, i));
     g_ptr_array_sort(sorted, ap_sort_cb);
 
-    /* Deduplicate by SSID — keep strongest AP per name.
-       The active AP always wins for its SSID regardless of signal. */
+    /* Deduplicate by SSID; active AP goes to top card, not listbox */
     GHashTable *seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     GPtrArray *unique = g_ptr_array_new();
 
-    NMAccessPoint *active_ap = nm_device_wifi_get_active_access_point(app->wifi_dev);
     if (active_ap) {
         char *ssid = ssid_to_string(nm_access_point_get_ssid(active_ap));
         g_hash_table_add(seen, ssid); /* owned by hash table */
-        g_ptr_array_add(unique, active_ap);
     }
 
     for (guint i = 0; i < sorted->len; i++) {
@@ -534,7 +621,23 @@ static void refresh_wifi_list(App *app)
         gtk_list_box_append(GTK_LIST_BOX(app->listbox), row);
     }
 
-    char *msg = g_strdup_printf("%u network(s) found", unique->len);
+    /* "Other…" row at bottom */
+    GtkWidget *other_row = gtk_list_box_row_new();
+    GtkWidget *other_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_margin_start(other_hbox, 16);
+    gtk_widget_set_margin_end(other_hbox, 16);
+    gtk_widget_set_margin_top(other_hbox, 11);
+    gtk_widget_set_margin_bottom(other_hbox, 11);
+    GtkWidget *other_lbl = gtk_label_new("Other…");
+    gtk_widget_add_css_class(other_lbl, "ssid-label");
+    gtk_widget_set_halign(other_lbl, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(other_hbox), other_lbl);
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(other_row), other_hbox);
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(other_row), FALSE);
+    gtk_list_box_append(GTK_LIST_BOX(app->listbox), other_row);
+
+    guint total = unique->len + (active_ap ? 1 : 0);
+    char *msg = g_strdup_printf("%u network(s) found", total);
     set_status(app, msg);
     g_free(msg);
     g_ptr_array_unref(unique);
@@ -546,7 +649,7 @@ static void background_scan_done_cb(GObject *source, GAsyncResult *res, gpointer
     App *app = user_data;
     GError *error = NULL;
     gboolean ok = nm_device_wifi_request_scan_finish(NM_DEVICE_WIFI(source), res, &error);
-    g_clear_error(&error); /* silently ignore rate-limit and other errors */
+    g_clear_error(&error);
     if (ok && app->window)
         schedule_delayed_refresh(app, 1500);
 }
@@ -556,10 +659,7 @@ static gboolean refresh_timer_cb(gpointer user_data)
     App *app = user_data;
     if (!app->window)
         return G_SOURCE_REMOVE;
-    /* Refresh display from NM's cached AP list immediately */
     refresh_wifi_list(app);
-    /* Also request a fresh scan; NM rate-limits to ~30 s when connected,
-       so most calls are no-ops — that's fine, the display still updates */
     if (app->wifi_dev)
         nm_device_wifi_request_scan_async(app->wifi_dev, app->cancellable,
                                           background_scan_done_cb, app);
@@ -606,6 +706,7 @@ static void scan_done_cb(GObject *source, GAsyncResult *res, gpointer user_data)
 
 static void scan_clicked(GtkButton *button, gpointer user_data)
 {
+    (void)button;
     App *app = user_data;
     app->wifi_dev = find_first_wifi_device(app);
     if (!app->wifi_dev) {
@@ -664,108 +765,105 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data)
         app->delayed_refresh_id = 0;
     }
     g_cancellable_cancel(app->cancellable);
-
-    /* Null widget pointers so any stale callbacks can detect the dead window */
     app->window = NULL;
 }
 
-static void apply_css(void){
+static void apply_css(void)
+{
     static const char *css =
-        /* ── DragonWing dark theme ─────────────────────────────────────────
-         * Surfaces:  primary #0a0a0a  secondary #19191a  raised #2a2a2b
-         * Brand:     #9f98f9  (violet)
-         * Text:      primary #ffffff   secondary #aaaaab
-         * Success:   #49b140   Warning: #ffc622
-         * Borders:   subtle rgba(255,255,255,.10)  medium rgba(255,255,255,.20)
-         * Radius:    card 12px  row 8px  pill 360px  button 4px
-         * Fonts:     Alfabet (display)  Roboto Flex (body/ui)
-         * ──────────────────────────────────────────────────────────────── */
+        /* ── iOS-inspired light Wi-Fi settings ─────────────────────────────
+         * Background:  #f2f2f7  (iOS systemGroupedBackground)
+         * Card:        #ffffff
+         * Text:        #1c1c1e  (iOS label)  secondary: #6c6c70
+         * Separator:   #c6c6c8
+         * Blue:        #007aff  (iOS tint)
+         * Green:       #34c759  (iOS switch active)
+         * ────────────────────────────────────────────────────────────────── */
 
-        /* Window & shell */
-        "window { background: #0a0a0a; color: #ffffff; }"
-        ".app-shell { background: #0a0a0a; }"
+        /* Window */
+        "window { background: #f2f2f7; color: #1c1c1e; }"
 
-        /* Strip default white backgrounds from list internals */
-        "listbox, listbox > * { background: transparent; }"
-        "scrolledwindow, viewport { background: transparent; }"
-        /* GtkListBoxRow has its own 'row' CSS node styled by Adwaita */
-        "row { background: transparent; padding: 0; }"
-        "row:hover, row:selected, row:focus { background: transparent; }"
+        /* Cards — white rounded boxes */
+        ".card { background: #ffffff; border-radius: 13px; }"
 
-        /* Card (network list container) */
-        ".card { background: #19191a;"
-        "        border-radius: 12px;"
-        "        padding: 16px;"
-        "        border: 1px solid rgba(255,255,255,0.10);"
-        "        box-shadow: 0 5px 10px 1px rgba(0,0,0,0.33); }"
+        /* WiFi icon badge (blue rounded square) */
+        ".wifi-badge {"
+        "  background: #007aff;"
+        "  border-radius: 14px;"
+        "  min-width: 60px; max-width: 60px;"
+        "  min-height: 60px; max-height: 60px; }"
+        ".wifi-badge-icon { color: #ffffff; }"
 
         /* Typography */
-        ".title   { font-family: Alfabet,sans-serif;"
-        "           font-size: 28px; font-weight: 600; color: #ffffff; }"
-        ".subtitle { font-family: \"Roboto Flex\",sans-serif;"
-        "            font-size: 14px; font-weight: 400; color: #aaaaab; }"
-        ".muted    { font-family: \"Roboto Flex\",sans-serif;"
-        "            font-size: 14px; font-weight: 400; color: #aaaaab; }"
+        ".wifi-title { font-size: 22px; font-weight: 700; color: #1c1c1e; }"
+        ".wifi-desc  { font-size: 15px; color: #6c6c70; }"
+        ".toggle-label { font-size: 17px; color: #1c1c1e; }"
+        ".ssid-label   { font-size: 17px; color: #1c1c1e; }"
+        ".section-header { font-size: 13px; color: #6c6c70; }"
+        ".status-label   { font-size: 13px; color: #6c6c70; }"
+        ".muted { font-size: 14px; color: #6c6c70; }"
+        ".dialog-title { font-size: 20px; font-weight: 600; color: #1c1c1e; }"
 
-        /* Network rows */
-        ".ssid { font-family: \"Roboto Flex\",sans-serif;"
-        "        font-size: 17px; font-weight: 500; color: #ffffff; }"
-        ".ap-row { border-radius: 8px; margin: 3px 0;"
-        "          background: #242425; min-height: 72px; }"
-        ".ap-row:hover { background: #2a2a2b; }"
-        ".connected-row { background: #001600;"
-        "                 border: 1px solid #005a00; }"
+        /* Card internal separator — inset on both sides like iOS */
+        ".card-sep { background: #c6c6c8; min-height: 1px;"
+        "            margin-left: 16px; margin-right: 16px; }"
 
-        /* Icons / indicators */
-        ".wifi-icon      { font-size: 22px; color: #9f98f9; }"
-        ".connected-icon { font-size: 22px; color: #49b140; }"
-        ".signal-strength { font-family: \"Roboto Flex\",sans-serif;"
-        "                   font-size: 14px; font-weight: 500;"
-        "                   color: #9f98f9; min-width: 42px; }"
+        /* Switch — green when on */
+        "switch { background: #e5e5ea; border-radius: 360px;"
+        "         min-width: 51px; min-height: 31px;"
+        "         border: none; outline: none; }"
+        "switch:checked { background: #34c759; }"
+        "switch slider { background: #ffffff; border-radius: 360px;"
+        "                min-width: 27px; min-height: 27px;"
+        "                box-shadow: 0 2px 4px rgba(0,0,0,0.25); }"
 
-        /* Buttons — override GTK suggested/destructive defaults */
-        ".primary-button { font-family: \"Roboto Flex\",sans-serif;"
-        "                  min-height: 40px; padding-left: 20px;"
-        "                  padding-right: 20px; border-radius: 4px;"
-        "                  font-size: 14px; font-weight: 500; }"
-        "button.suggested-action  { background: #5c2ad9; color: #ffffff; }"
-        "button.suggested-action:hover { background: #6234e1; }"
-        "button.suggested-action:active { background: #6f48f3; }"
-        "button.destructive-action { background: #a50000; color: #ffffff; }"
-        "button.destructive-action:hover { background: #be0000; }"
-        "button.destructive-action:active { background: #d02107; }"
+        /* Listbox (networks list) */
+        /* Transparent background on the list itself; rows carry the white card look.
+           First/last rows get rounded corners — this is the only reliable GTK4 approach
+           since overflow:hidden does not clip child widget backgrounds. */
+        ".networks-list { background: transparent; }"
+        ".networks-list > row {"
+        "    background: #ffffff; padding: 0; border: none; min-height: 0;"
+        "    border-bottom: 1px solid rgba(0,0,0,0.1); }"
+        ".networks-list > row:first-child {"
+        "    border-top-left-radius: 13px;"
+        "    border-top-right-radius: 13px; }"
+        ".networks-list > row:last-child {"
+        "    border-bottom: none;"
+        "    border-bottom-left-radius: 13px;"
+        "    border-bottom-right-radius: 13px; }"
+        ".networks-list > row:hover { background: #f9f9f9; }"
+        ".networks-list > row:active { background: #e5e5ea; }"
+        ".networks-list > row:selected,"
+        ".networks-list > row:focus { background: #ffffff; outline: none; }"
 
-        /* Status bar */
-        ".status-pill { font-family: \"Roboto Flex\",sans-serif;"
-        "               background: #19191a; border-radius: 360px;"
-        "               padding: 8px 14px; color: #aaaaab; font-size: 14px;"
-        "               border: 1px solid rgba(255,255,255,0.10); }"
+        /* Row icons */
+        ".connected-check-icon { color: #007aff; }"
+        ".row-icon { color: #3c3c43; opacity: 0.6; }"
+        ".info-icon { color: #007aff; }"
+        ".info-btn { padding: 2px; min-width: 30px; min-height: 30px;"
+        "            border-radius: 360px; }"
+        ".info-btn:hover { background: rgba(0,122,255,0.08); }"
 
-        /* Password panel */
-        ".dialog-title { font-family: \"Roboto Flex\",sans-serif;"
-        "                font-size: 24px; font-weight: 600; color: #ffffff; }"
-        ".password-entry { min-height: 48px; font-size: 16px;"
-        "                  border-radius: 4px; }"
-        ".password-panel { background: #19191a; border-radius: 12px;"
-        "                  padding: 24px;"
-        "                  border: 1px solid rgba(255,255,255,0.10); }"
+        /* Buttons */
+        "button.suggested-action { background: #007aff; color: #ffffff;"
+        "                          border-radius: 8px; padding: 8px 18px;"
+        "                          font-size: 15px; font-weight: 500; }"
+        "button.suggested-action:hover { background: #0066d4; }"
+        "button.suggested-action:active { background: #005cbf; }"
+        "button.destructive-action { background: #ff3b30; color: #ffffff;"
+        "                            border-radius: 8px; padding: 6px 14px;"
+        "                            font-size: 14px; }"
+        "button.destructive-action:hover { background: #e0352b; }"
+        ".scan-btn { color: #007aff; font-size: 15px; font-weight: 500;"
+        "            padding: 4px 10px; border-radius: 6px; }"
+        ".scan-btn:hover { background: rgba(0,122,255,0.08); }"
 
-        /* PSK reveal panel */
-        ".psk-display { font-size: 22px; font-weight: 500; color: #49b140;"
-        "               font-family: \"Roboto Mono\",monospace;"
-        "               letter-spacing: 2px; }"
-        ".psk-panel { background: #0a0a0a; border-radius: 12px; padding: 24px;"
-        "             border: 1px solid rgba(255,255,255,0.20); }"
-
-        /* Security badges */
-        ".badge-open   { background: #1e1500; color: #ffc622;"
-        "                border-radius: 360px; padding: 3px 10px;"
-        "                font-size: 12px; font-weight: 500;"
-        "                border: 1px solid #5a4403; }"
-        ".badge-secured { background: #001600; color: #49b140;"
-        "                 border-radius: 360px; padding: 3px 10px;"
-        "                 font-size: 12px; font-weight: 500;"
-        "                 border: 1px solid #005a00; }";
+        /* Password / PSK panels */
+        ".password-panel { background: #ffffff; border-radius: 13px; padding: 20px; }"
+        ".password-entry { min-height: 44px; font-size: 16px; border-radius: 8px; }"
+        ".psk-display { font-size: 18px; font-weight: 500; color: #1c1c1e;"
+        "               font-family: monospace; letter-spacing: 1px; }";
 
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_data(provider, css, -1);
@@ -780,90 +878,175 @@ static void build_ui(App *app)
     apply_css();
 
     app->window = gtk_application_window_new(app->gtk_app);
-    gtk_window_set_title(GTK_WINDOW(app->window), "Network Settings");
-    gtk_window_set_default_size(GTK_WINDOW(app->window), 900, 620);
+    gtk_window_set_title(GTK_WINDOW(app->window), "Wi-Fi");
+    gtk_window_set_default_size(GTK_WINDOW(app->window), 480, 680);
     g_signal_connect(app->window, "destroy", G_CALLBACK(on_window_destroy), app);
 
+    /* Capture clicks to dismiss password panel on outside tap */
     GtkGesture *click = gtk_gesture_click_new();
-    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);   /* any mouse button */
-    gtk_gesture_single_set_touch_only(GTK_GESTURE_SINGLE(click), FALSE); /* mouse + touch */
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);
+    gtk_gesture_single_set_touch_only(GTK_GESTURE_SINGLE(click), FALSE);
     gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click), GTK_PHASE_CAPTURE);
     g_signal_connect(click, "pressed", G_CALLBACK(on_outside_press), app);
     gtk_widget_add_controller(app->window, GTK_EVENT_CONTROLLER(click));
 
-    GtkWidget *shell = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
-    gtk_widget_add_css_class(shell, "app-shell");
-    gtk_widget_set_margin_top(shell, 24);
-    gtk_widget_set_margin_bottom(shell, 24);
-    gtk_widget_set_margin_start(shell, 24);
-    gtk_widget_set_margin_end(shell, 24);
-    gtk_window_set_child(GTK_WINDOW(app->window), shell);
+    /* Root: scrolled window so content works on small screens */
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_window_set_child(GTK_WINDOW(app->window), scroll);
 
-    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
-    gtk_box_append(GTK_BOX(shell), header);
+    /* Shell — vertical box with page margins */
+    GtkWidget *shell = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_margin_top(shell, 16);
+    gtk_widget_set_margin_bottom(shell, 32);
+    gtk_widget_set_margin_start(shell, 16);
+    gtk_widget_set_margin_end(shell, 16);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), shell);
 
-    GtkWidget *title_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_widget_set_hexpand(title_box, TRUE);
-    gtk_box_append(GTK_BOX(header), title_box);
+    /* ── TOP CARD ──────────────────────────────────────────────────────── */
+    GtkWidget *top_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(top_card, "card");
+    gtk_box_append(GTK_BOX(shell), top_card);
 
-    GtkWidget *title = gtk_label_new("Wi-Fi");
-    gtk_widget_add_css_class(title, "title");
-    gtk_widget_set_halign(title, GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(title_box), title);
+    /* Header: badge + title + description */
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_widget_set_margin_top(header, 20);
+    gtk_widget_set_margin_bottom(header, 16);
+    gtk_widget_set_margin_start(header, 16);
+    gtk_widget_set_margin_end(header, 16);
+    gtk_box_append(GTK_BOX(top_card), header);
 
-    app->subtitle_label = gtk_label_new("Interface: detecting…");
-    gtk_widget_add_css_class(app->subtitle_label, "subtitle");
-    gtk_widget_set_halign(app->subtitle_label, GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(title_box), app->subtitle_label);
+    /* WiFi blue badge */
+    GtkWidget *badge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(badge, "wifi-badge");
+    gtk_widget_set_halign(badge, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(header), badge);
+
+    GtkWidget *badge_icon = gtk_image_new_from_icon_name("network-wireless-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(badge_icon), 34);
+    gtk_widget_add_css_class(badge_icon, "wifi-badge-icon");
+    gtk_widget_set_margin_top(badge_icon, 13);
+    gtk_widget_set_margin_bottom(badge_icon, 13);
+    gtk_widget_set_margin_start(badge_icon, 13);
+    gtk_widget_set_margin_end(badge_icon, 13);
+    gtk_box_append(GTK_BOX(badge), badge_icon);
+
+    /* Title */
+    GtkWidget *title_lbl = gtk_label_new("Wi-Fi");
+    gtk_widget_add_css_class(title_lbl, "wifi-title");
+    gtk_widget_set_halign(title_lbl, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(header), title_lbl);
+
+    /* Description */
+    GtkWidget *desc_lbl = gtk_label_new(
+        "Connect to Wi-Fi, view available networks, and manage "
+        "settings for joining networks and nearby hotspots.");
+    gtk_widget_add_css_class(desc_lbl, "wifi-desc");
+    gtk_label_set_wrap(GTK_LABEL(desc_lbl), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(desc_lbl), 0.0f);
+    gtk_widget_set_halign(desc_lbl, GTK_ALIGN_FILL);
+    gtk_box_append(GTK_BOX(header), desc_lbl);
+
+    /* Separator */
+    GtkWidget *sep1 = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_add_css_class(sep1, "card-sep");
+    gtk_box_append(GTK_BOX(top_card), sep1);
+
+    /* Wi-Fi toggle row */
+    GtkWidget *toggle_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_margin_start(toggle_row, 16);
+    gtk_widget_set_margin_end(toggle_row, 16);
+    gtk_widget_set_size_request(toggle_row, -1, 44);
+    gtk_box_append(GTK_BOX(top_card), toggle_row);
+
+    GtkWidget *wifi_lbl = gtk_label_new("Wi-Fi");
+    gtk_widget_add_css_class(wifi_lbl, "toggle-label");
+    gtk_widget_set_hexpand(wifi_lbl, TRUE);
+    gtk_widget_set_halign(wifi_lbl, GTK_ALIGN_START);
+    gtk_widget_set_valign(wifi_lbl, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(toggle_row), wifi_lbl);
 
     app->spinner = gtk_spinner_new();
-    gtk_box_append(GTK_BOX(header), app->spinner);
+    gtk_widget_set_valign(app->spinner, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_end(app->spinner, 4);
+    gtk_box_append(GTK_BOX(toggle_row), app->spinner);
 
     app->wifi_switch = gtk_switch_new();
     gtk_widget_set_valign(app->wifi_switch, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(header), app->wifi_switch);
+    gtk_box_append(GTK_BOX(toggle_row), app->wifi_switch);
+
+    /* Connected AP separator (hidden until a connection exists) */
+    app->connected_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_add_css_class(app->connected_sep, "card-sep");
+    gtk_widget_set_visible(app->connected_sep, FALSE);
+    gtk_box_append(GTK_BOX(top_card), app->connected_sep);
+
+    /* Connected AP content — filled in by refresh_wifi_list() */
+    app->connected_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_append(GTK_BOX(top_card), app->connected_box);
+
+    /* ── SPACER ──────────────────────────────────────────────────────── */
+    GtkWidget *spacer1 = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_size_request(spacer1, -1, 24);
+    gtk_box_append(GTK_BOX(shell), spacer1);
+
+    /* ── "Networks" section header + Scan button ─────────────────────── */
+    GtkWidget *sec_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_margin_start(sec_row, 4);
+    gtk_widget_set_margin_bottom(sec_row, 6);
+    gtk_box_append(GTK_BOX(shell), sec_row);
+
+    GtkWidget *sec_lbl = gtk_label_new("Networks");
+    gtk_widget_add_css_class(sec_lbl, "section-header");
+    gtk_widget_set_halign(sec_lbl, GTK_ALIGN_START);
+    gtk_widget_set_valign(sec_lbl, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(sec_lbl, TRUE);
+    gtk_box_append(GTK_BOX(sec_row), sec_lbl);
 
     app->scan_button = gtk_button_new_with_label("Scan");
-    gtk_widget_add_css_class(app->scan_button, "primary-button");
-    gtk_widget_add_css_class(app->scan_button, "suggested-action");
-    gtk_box_append(GTK_BOX(header), app->scan_button);
+    gtk_widget_add_css_class(app->scan_button, "flat");
+    gtk_widget_add_css_class(app->scan_button, "scan-btn");
+    gtk_widget_set_valign(app->scan_button, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(sec_row), app->scan_button);
 
-    GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_widget_add_css_class(card, "card");
-    gtk_widget_set_vexpand(card, TRUE);
-    gtk_box_append(GTK_BOX(shell), card);
-
+    /* ── NETWORKS CARD — card styling goes directly on the listbox ───── */
     app->listbox = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(app->listbox), GTK_SELECTION_NONE);
-    gtk_widget_remove_css_class(app->listbox, "view"); /* prevents Adwaita white background */
-    gtk_widget_set_vexpand(app->listbox, TRUE);
+    gtk_list_box_set_show_separators(GTK_LIST_BOX(app->listbox), FALSE);
+    gtk_widget_remove_css_class(app->listbox, "view");
+    gtk_widget_add_css_class(app->listbox, "networks-list");
+    gtk_widget_set_name(app->listbox, "ap-listbox");
+    gtk_box_append(GTK_BOX(shell), app->listbox);
 
-    GtkWidget *scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_NEVER);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), app->listbox);
-    gtk_widget_set_vexpand(scroll, TRUE);
-    gtk_box_append(GTK_BOX(card), scroll);
+    /* ── STATUS BAR ──────────────────────────────────────────────────── */
+    GtkWidget *spacer2 = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_size_request(spacer2, -1, 12);
+    gtk_box_append(GTK_BOX(shell), spacer2);
 
-    GtkWidget *bottom_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *bottom_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_append(GTK_BOX(shell), bottom_bar);
 
     app->status_label = gtk_label_new("Ready");
-    gtk_widget_add_css_class(app->status_label, "status-pill");
+    gtk_widget_add_css_class(app->status_label, "status-label");
     gtk_widget_set_halign(app->status_label, GTK_ALIGN_START);
+    gtk_widget_set_valign(app->status_label, GTK_ALIGN_CENTER);
     gtk_widget_set_hexpand(app->status_label, TRUE);
     gtk_box_append(GTK_BOX(bottom_bar), app->status_label);
 
     GtkWidget *close_btn = gtk_button_new_with_label("Close");
-    gtk_widget_add_css_class(close_btn, "primary-button");
     gtk_widget_add_css_class(close_btn, "destructive-action");
-    gtk_widget_set_halign(close_btn, GTK_ALIGN_END);
     gtk_box_append(GTK_BOX(bottom_bar), close_btn);
     g_signal_connect_swapped(close_btn, "clicked", G_CALLBACK(gtk_window_destroy), app->window);
 
-    /* Inline password panel — slides in, no floating window */
+    /* ── PASSWORD PANEL ──────────────────────────────────────────────── */
+    GtkWidget *spacer3 = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_size_request(spacer3, -1, 12);
+    gtk_box_append(GTK_BOX(shell), spacer3);
+
     app->password_revealer = gtk_revealer_new();
     gtk_revealer_set_transition_type(GTK_REVEALER(app->password_revealer),
-                                     GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
+                                     GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
     gtk_revealer_set_reveal_child(GTK_REVEALER(app->password_revealer), FALSE);
     gtk_box_append(GTK_BOX(shell), app->password_revealer);
 
@@ -876,7 +1059,7 @@ static void build_ui(App *app)
     gtk_widget_set_halign(app->password_title, GTK_ALIGN_START);
     gtk_box_append(GTK_BOX(panel), app->password_title);
 
-    GtkWidget *hint = gtk_label_new("Enter the network password to join this secured Wi-Fi network.");
+    GtkWidget *hint = gtk_label_new("Enter the network password to join this Wi-Fi network.");
     gtk_widget_add_css_class(hint, "muted");
     gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
     gtk_widget_set_halign(hint, GTK_ALIGN_START);
@@ -889,31 +1072,30 @@ static void build_ui(App *app)
     gtk_widget_add_css_class(app->password_entry, "password-entry");
     gtk_box_append(GTK_BOX(panel), app->password_entry);
 
-    GtkWidget *buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    gtk_widget_set_halign(buttons, GTK_ALIGN_END);
-    gtk_box_append(GTK_BOX(panel), buttons);
+    GtkWidget *pw_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_widget_set_halign(pw_buttons, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(panel), pw_buttons);
 
-    GtkWidget *cancel = gtk_button_new_with_label("Cancel");
-    GtkWidget *connect_btn = gtk_button_new_with_label("Connect");
-    gtk_widget_add_css_class(connect_btn, "suggested-action");
-    gtk_widget_add_css_class(connect_btn, "primary-button");
-    gtk_widget_add_css_class(cancel, "flat");
-    gtk_box_append(GTK_BOX(buttons), cancel);
-    gtk_box_append(GTK_BOX(buttons), connect_btn);
+    GtkWidget *cancel_btn = gtk_button_new_with_label("Cancel");
+    gtk_widget_add_css_class(cancel_btn, "flat");
+    GtkWidget *join_btn = gtk_button_new_with_label("Join");
+    gtk_widget_add_css_class(join_btn, "suggested-action");
+    gtk_box_append(GTK_BOX(pw_buttons), cancel_btn);
+    gtk_box_append(GTK_BOX(pw_buttons), join_btn);
 
-    g_signal_connect(cancel, "clicked", G_CALLBACK(password_cancel_clicked), app);
-    g_signal_connect(connect_btn, "clicked", G_CALLBACK(password_connect_clicked), app);
+    g_signal_connect(cancel_btn, "clicked", G_CALLBACK(password_cancel_clicked), app);
+    g_signal_connect(join_btn, "clicked", G_CALLBACK(password_connect_clicked), app);
     g_signal_connect(app->password_entry, "activate", G_CALLBACK(password_entry_activate), app);
 
-    /* Inline PSK reveal panel */
+    /* ── PSK REVEAL PANEL ────────────────────────────────────────────── */
     app->psk_revealer = gtk_revealer_new();
     gtk_revealer_set_transition_type(GTK_REVEALER(app->psk_revealer),
-                                     GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
+                                     GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
     gtk_revealer_set_reveal_child(GTK_REVEALER(app->psk_revealer), FALSE);
     gtk_box_append(GTK_BOX(shell), app->psk_revealer);
 
     GtkWidget *psk_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
-    gtk_widget_add_css_class(psk_panel, "psk-panel");
+    gtk_widget_add_css_class(psk_panel, "password-panel");
     gtk_revealer_set_child(GTK_REVEALER(app->psk_revealer), psk_panel);
 
     app->psk_ssid_label = gtk_label_new("");
@@ -938,6 +1120,7 @@ static void build_ui(App *app)
     gtk_box_append(GTK_BOX(psk_panel), psk_hide_btn);
     g_signal_connect(psk_hide_btn, "clicked", G_CALLBACK(psk_hide_clicked), app);
 
+    /* Wire main signals */
     g_signal_connect(app->scan_button, "clicked", G_CALLBACK(scan_clicked), app);
     g_signal_connect(app->listbox, "row-activated", G_CALLBACK(ap_row_activated), app);
     g_signal_connect(app->wifi_switch, "state-set", G_CALLBACK(wifi_switch_state_set), app);
@@ -969,8 +1152,6 @@ static void app_shutdown(GApplication *gapp, gpointer user_data)
 {
     (void)gapp;
     App *app = user_data;
-    /* on_window_destroy handles timers and cancellable when close is used normally;
-       guard here covers edge cases (e.g. session logout) where shutdown fires first */
     if (app->refresh_timer_id) {
         g_source_remove(app->refresh_timer_id);
         app->refresh_timer_id = 0;
@@ -986,7 +1167,6 @@ static void app_shutdown(GApplication *gapp, gpointer user_data)
 
 int main(int argc, char **argv)
 {
-    /* Avoid VK_SUBOPTIMAL_KHR spam when the virtual keyboard resizes the surface */
     g_setenv("GSK_RENDERER", "gl", FALSE);
 
     App app;
