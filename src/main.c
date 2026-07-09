@@ -40,10 +40,22 @@ typedef struct {
     NMClient *client;
     NMDeviceWifi *wifi_dev;
     guint refresh_timer_id;
+    guint delayed_refresh_id;
+    GCancellable *cancellable;
 } App;
 
 static gboolean refresh_timer_cb(gpointer user_data);
+static gboolean delayed_refresh_cb(gpointer user_data);
 static void refresh_wifi_list(App *app);
+
+static void schedule_delayed_refresh(App *app, guint ms)
+{
+    if (app->delayed_refresh_id) {
+        g_source_remove(app->delayed_refresh_id);
+        app->delayed_refresh_id = 0;
+    }
+    app->delayed_refresh_id = g_timeout_add(ms, delayed_refresh_cb, app);
+}
 
 static char *ssid_to_string(GBytes *ssid)
 {
@@ -132,6 +144,15 @@ static void hide_password_panel(App *app)
     g_clear_object(&app->pending_ap);
 }
 
+static void on_password_revealer_revealed(GObject *revealer, GParamSpec *pspec, gpointer user_data)
+{
+    GtkWidget *entry = GTK_WIDGET(user_data);
+    if (gtk_revealer_get_child_revealed(GTK_REVEALER(revealer))) {
+        gtk_widget_grab_focus(entry);
+        g_signal_handlers_disconnect_by_func(revealer, on_password_revealer_revealed, user_data);
+    }
+}
+
 static void show_password_panel(App *app, NMAccessPoint *ap, const char *ssid)
 {
     g_set_object(&app->pending_ap, ap);
@@ -141,8 +162,9 @@ static void show_password_panel(App *app, NMAccessPoint *ap, const char *ssid)
     g_free(title);
 
     gtk_editable_set_text(GTK_EDITABLE(app->password_entry), "");
+    g_signal_connect(app->password_revealer, "notify::child-revealed",
+                     G_CALLBACK(on_password_revealer_revealed), app->password_entry);
     gtk_revealer_set_reveal_child(GTK_REVEALER(app->password_revealer), TRUE);
-    g_idle_add((GSourceFunc)gtk_widget_grab_focus, app->password_entry);
 }
 
 static void activate_done_cb(GObject *source, GAsyncResult *res, gpointer user_data)
@@ -152,12 +174,21 @@ static void activate_done_cb(GObject *source, GAsyncResult *res, gpointer user_d
 
     NMActiveConnection *active = nm_client_add_and_activate_connection_finish(NM_CLIENT(source), res, &error);
     if (!active) {
-        char *msg = g_strdup_printf("Connection failed: %s", error ? error->message : "unknown error");
-        set_status(app, msg);
-        g_free(msg);
+        if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            g_clear_error(&error);
+            return;
+        }
+        if (app->window) {
+            char *msg = g_strdup_printf("Connection failed: %s", error ? error->message : "unknown error");
+            set_status(app, msg);
+            g_free(msg);
+        }
         g_clear_error(&error);
         return;
     }
+
+    if (!app->window)
+        return;
 
     set_status(app, "Connection activation requested");
     refresh_wifi_list(app);
@@ -222,7 +253,7 @@ static void connect_to_ap(App *app, NMAccessPoint *ap, const char *password)
                                                 conn,
                                                 NM_DEVICE(app->wifi_dev),
                                                 ap_path,
-                                                NULL,
+                                                app->cancellable,
                                                 activate_done_cb,
                                                 app);
 
@@ -292,8 +323,18 @@ static void secrets_cb(GObject *source, GAsyncResult *res, gpointer user_data)
     GVariant *secrets = nm_remote_connection_get_secrets_finish(
         NM_REMOTE_CONNECTION(source), res, &error);
     if (!secrets) {
-        set_status(app, error ? error->message : "Failed to retrieve secrets");
+        if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            g_clear_error(&error);
+            return;
+        }
+        if (app->window)
+            set_status(app, error ? error->message : "Failed to retrieve secrets");
         g_clear_error(&error);
+        return;
+    }
+
+    if (!app->window) {
+        g_variant_unref(secrets);
         return;
     }
 
@@ -344,7 +385,7 @@ static void show_psk_clicked(GtkButton *button, gpointer user_data)
 
     nm_remote_connection_get_secrets_async(NM_REMOTE_CONNECTION(conn),
                                            NM_SETTING_WIRELESS_SECURITY_SETTING_NAME,
-                                           NULL, secrets_cb, app);
+                                           app->cancellable, secrets_cb, app);
 }
 
 static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
@@ -485,6 +526,9 @@ static gboolean refresh_timer_cb(gpointer user_data)
 static gboolean delayed_refresh_cb(gpointer user_data)
 {
     App *app = user_data;
+    app->delayed_refresh_id = 0;
+    if (!app->window)
+        return G_SOURCE_REMOVE;
     gtk_spinner_stop(GTK_SPINNER(app->spinner));
     refresh_wifi_list(app);
     return G_SOURCE_REMOVE;
@@ -496,16 +540,25 @@ static void scan_done_cb(GObject *source, GAsyncResult *res, gpointer user_data)
     GError *error = NULL;
 
     if (!nm_device_wifi_request_scan_finish(NM_DEVICE_WIFI(source), res, &error)) {
-        gtk_spinner_stop(GTK_SPINNER(app->spinner));
-        char *msg = g_strdup_printf("Scan failed: %s", error ? error->message : "unknown error");
-        set_status(app, msg);
-        g_free(msg);
+        if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            g_clear_error(&error);
+            return;
+        }
+        if (app->window) {
+            gtk_spinner_stop(GTK_SPINNER(app->spinner));
+            char *msg = g_strdup_printf("Scan failed: %s", error ? error->message : "unknown error");
+            set_status(app, msg);
+            g_free(msg);
+        }
         g_clear_error(&error);
         return;
     }
 
+    if (!app->window)
+        return;
+
     set_status(app, "Scan requested. Updating list…");
-    g_timeout_add(1500, delayed_refresh_cb, app);
+    schedule_delayed_refresh(app, 1500);
 }
 
 static void scan_clicked(GtkButton *button, gpointer user_data)
@@ -519,7 +572,7 @@ static void scan_clicked(GtkButton *button, gpointer user_data)
 
     gtk_spinner_start(GTK_SPINNER(app->spinner));
     set_status(app, "Scanning…");
-    nm_device_wifi_request_scan_async(app->wifi_dev, NULL, scan_done_cb, app);
+    nm_device_wifi_request_scan_async(app->wifi_dev, app->cancellable, scan_done_cb, app);
 }
 
 static gboolean wifi_switch_state_set(GtkSwitch *sw, gboolean state, gpointer user_data)
@@ -527,12 +580,30 @@ static gboolean wifi_switch_state_set(GtkSwitch *sw, gboolean state, gpointer us
     App *app = user_data;
     nm_client_wireless_set_enabled(app->client, state);
     set_status(app, state ? "Wi-Fi enabled" : "Wi-Fi disabled");
-    g_timeout_add(500, delayed_refresh_cb, app);
+    schedule_delayed_refresh(app, 500);
     return FALSE;
 }
 
-static void apply_css(void)
+static void on_window_destroy(GtkWidget *widget, gpointer user_data)
 {
+    (void)widget;
+    App *app = user_data;
+
+    if (app->refresh_timer_id) {
+        g_source_remove(app->refresh_timer_id);
+        app->refresh_timer_id = 0;
+    }
+    if (app->delayed_refresh_id) {
+        g_source_remove(app->delayed_refresh_id);
+        app->delayed_refresh_id = 0;
+    }
+    g_cancellable_cancel(app->cancellable);
+
+    /* Null widget pointers so any stale callbacks can detect the dead window */
+    app->window = NULL;
+}
+
+static void apply_css(void){
     static const char *css =
         "window { background: #0f172a; color: #e5e7eb; }"
         ".app-shell { background: #0f172a; }"
@@ -570,6 +641,7 @@ static void build_ui(App *app)
     app->window = gtk_application_window_new(app->gtk_app);
     gtk_window_set_title(GTK_WINDOW(app->window), "Network Settings");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 900, 620);
+    g_signal_connect(app->window, "destroy", G_CALLBACK(on_window_destroy), app);
 
     GtkWidget *shell = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_widget_add_css_class(shell, "app-shell");
@@ -735,6 +807,8 @@ static void app_activate(GtkApplication *gtk_app, gpointer user_data)
         return;
     }
 
+    app->cancellable = g_cancellable_new();
+
     build_ui(app);
     refresh_wifi_list(app);
 
@@ -744,15 +818,28 @@ static void app_activate(GtkApplication *gtk_app, gpointer user_data)
 
 static void app_shutdown(GApplication *gapp, gpointer user_data)
 {
+    (void)gapp;
     App *app = user_data;
-    if (app->refresh_timer_id)
+    /* on_window_destroy handles timers and cancellable when close is used normally;
+       guard here covers edge cases (e.g. session logout) where shutdown fires first */
+    if (app->refresh_timer_id) {
         g_source_remove(app->refresh_timer_id);
+        app->refresh_timer_id = 0;
+    }
+    if (app->delayed_refresh_id) {
+        g_source_remove(app->delayed_refresh_id);
+        app->delayed_refresh_id = 0;
+    }
+    g_clear_object(&app->cancellable);
     g_clear_object(&app->pending_ap);
     g_clear_object(&app->client);
 }
 
 int main(int argc, char **argv)
 {
+    /* Avoid VK_SUBOPTIMAL_KHR spam when the virtual keyboard resizes the surface */
+    g_setenv("GSK_RENDERER", "gl", FALSE);
+
     App app;
     memset(&app, 0, sizeof(app));
 
