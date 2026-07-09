@@ -429,7 +429,13 @@ static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
     gtk_box_append(GTK_BOX(outer), pct_label);
     g_free(pct);
 
-    if (active) {
+    gboolean is_open = g_strcmp0(sec, "Open") == 0;
+    GtkWidget *sec_badge = gtk_label_new(is_open ? "Open" : "Secured");
+    gtk_widget_add_css_class(sec_badge, is_open ? "badge-open" : "badge-secured");
+    gtk_widget_set_valign(sec_badge, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(outer), sec_badge);
+
+    if (active && !is_open) {
         GtkWidget *show_btn = gtk_button_new_with_label("Show Password");
         gtk_widget_add_css_class(show_btn, "flat");
         gtk_widget_set_valign(show_btn, GTK_ALIGN_CENTER);
@@ -620,26 +626,94 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data)
 
 static void apply_css(void){
     static const char *css =
-        "window { background: #0f172a; color: #e5e7eb; }"
-        ".app-shell { background: #0f172a; }"
-        ".card { background: #111827; border-radius: 22px; padding: 18px; box-shadow: 0 8px 30px rgba(0,0,0,0.35); }"
-        ".title { font-size: 32px; font-weight: 800; color: #f8fafc; }"
-        ".subtitle { font-size: 15px; color: #94a3b8; }"
-        ".muted { color: #94a3b8; font-size: 14px; }"
-        ".ssid { font-size: 21px; font-weight: 700; color: #f8fafc; }"
-        ".ap-row { border-radius: 18px; margin: 6px; background: #1f2937; min-height: 76px; }"
-        ".ap-row:hover { background: #263244; }"
-        ".connected-row { background: #064e3b; }"
-        ".wifi-icon { font-size: 26px; color: #38bdf8; }"
-        ".connected-icon { font-size: 28px; color: #34d399; font-weight: 900; }"
-        ".signal-strength { font-size: 15px; font-weight: 700; color: #38bdf8; min-width: 48px; }"
-        ".primary-button { min-height: 48px; padding-left: 22px; padding-right: 22px; border-radius: 14px; font-weight: 700; }"
-        ".status-pill { background: #020617; border-radius: 999px; padding: 10px 14px; color: #cbd5e1; }"
-        ".dialog-title { font-size: 26px; font-weight: 800; color: #f8fafc; }"
-        ".password-entry { min-height: 54px; font-size: 20px; border-radius: 14px; }"
-        ".password-panel { background: #111827; border-radius: 22px; padding: 24px; }"
-        ".psk-display { font-size: 28px; font-weight: 700; color: #34d399; font-family: monospace; letter-spacing: 2px; }"
-        ".psk-panel { background: #0d2137; border-radius: 22px; padding: 24px; border: 2px solid #1e3a5f; }";
+        /* ── DragonWing dark theme ─────────────────────────────────────────
+         * Surfaces:  primary #0a0a0a  secondary #19191a  raised #2a2a2b
+         * Brand:     #9f98f9  (violet)
+         * Text:      primary #ffffff   secondary #aaaaab
+         * Success:   #49b140   Warning: #ffc622
+         * Borders:   subtle rgba(255,255,255,.10)  medium rgba(255,255,255,.20)
+         * Radius:    card 12px  row 8px  pill 360px  button 4px
+         * Fonts:     Alfabet (display)  Roboto Flex (body/ui)
+         * ──────────────────────────────────────────────────────────────── */
+
+        /* Window & shell */
+        "window { background: #0a0a0a; color: #ffffff; }"
+        ".app-shell { background: #0a0a0a; }"
+
+        /* Card (network list container) */
+        ".card { background: #19191a;"
+        "        border-radius: 12px;"
+        "        padding: 16px;"
+        "        border: 1px solid rgba(255,255,255,0.10);"
+        "        box-shadow: 0 5px 10px 1px rgba(0,0,0,0.33); }"
+
+        /* Typography */
+        ".title   { font-family: Alfabet,sans-serif;"
+        "           font-size: 28px; font-weight: 600; color: #ffffff; }"
+        ".subtitle { font-family: \"Roboto Flex\",sans-serif;"
+        "            font-size: 14px; font-weight: 400; color: #aaaaab; }"
+        ".muted    { font-family: \"Roboto Flex\",sans-serif;"
+        "            font-size: 14px; font-weight: 400; color: #aaaaab; }"
+
+        /* Network rows */
+        ".ssid { font-family: \"Roboto Flex\",sans-serif;"
+        "        font-size: 17px; font-weight: 500; color: #ffffff; }"
+        ".ap-row { border-radius: 8px; margin: 3px 0;"
+        "          background: #242425; min-height: 72px; }"
+        ".ap-row:hover { background: #2a2a2b; }"
+        ".connected-row { background: #001600;"
+        "                 border: 1px solid #005a00; }"
+
+        /* Icons / indicators */
+        ".wifi-icon      { font-size: 22px; color: #9f98f9; }"
+        ".connected-icon { font-size: 22px; color: #49b140; }"
+        ".signal-strength { font-family: \"Roboto Flex\",sans-serif;"
+        "                   font-size: 14px; font-weight: 500;"
+        "                   color: #9f98f9; min-width: 42px; }"
+
+        /* Buttons — override GTK suggested/destructive defaults */
+        ".primary-button { font-family: \"Roboto Flex\",sans-serif;"
+        "                  min-height: 40px; padding-left: 20px;"
+        "                  padding-right: 20px; border-radius: 4px;"
+        "                  font-size: 14px; font-weight: 500; }"
+        "button.suggested-action  { background: #5c2ad9; color: #ffffff; }"
+        "button.suggested-action:hover { background: #6234e1; }"
+        "button.suggested-action:active { background: #6f48f3; }"
+        "button.destructive-action { background: #a50000; color: #ffffff; }"
+        "button.destructive-action:hover { background: #be0000; }"
+        "button.destructive-action:active { background: #d02107; }"
+
+        /* Status bar */
+        ".status-pill { font-family: \"Roboto Flex\",sans-serif;"
+        "               background: #19191a; border-radius: 360px;"
+        "               padding: 8px 14px; color: #aaaaab; font-size: 14px;"
+        "               border: 1px solid rgba(255,255,255,0.10); }"
+
+        /* Password panel */
+        ".dialog-title { font-family: \"Roboto Flex\",sans-serif;"
+        "                font-size: 24px; font-weight: 600; color: #ffffff; }"
+        ".password-entry { min-height: 48px; font-size: 16px;"
+        "                  border-radius: 4px; }"
+        ".password-panel { background: #19191a; border-radius: 12px;"
+        "                  padding: 24px;"
+        "                  border: 1px solid rgba(255,255,255,0.10); }"
+
+        /* PSK reveal panel */
+        ".psk-display { font-size: 22px; font-weight: 500; color: #49b140;"
+        "               font-family: \"Roboto Mono\",monospace;"
+        "               letter-spacing: 2px; }"
+        ".psk-panel { background: #0a0a0a; border-radius: 12px; padding: 24px;"
+        "             border: 1px solid rgba(255,255,255,0.20); }"
+
+        /* Security badges */
+        ".badge-open   { background: #1e1500; color: #ffc622;"
+        "                border-radius: 360px; padding: 3px 10px;"
+        "                font-size: 12px; font-weight: 500;"
+        "                border: 1px solid #5a4403; }"
+        ".badge-secured { background: #001600; color: #49b140;"
+        "                 border-radius: 360px; padding: 3px 10px;"
+        "                 font-size: 12px; font-weight: 500;"
+        "                 border: 1px solid #005a00; }";
 
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_data(provider, css, -1);
