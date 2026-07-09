@@ -50,6 +50,7 @@ typedef struct {
 static gboolean refresh_timer_cb(gpointer user_data);
 static gboolean delayed_refresh_cb(gpointer user_data);
 static void refresh_wifi_list(App *app);
+static gboolean wifi_switch_state_set(GtkSwitch *sw, gboolean state, gpointer user_data);
 
 static void schedule_delayed_refresh(App *app, guint ms)
 {
@@ -560,14 +561,20 @@ static void refresh_wifi_list(App *app)
     clear_box_children(app->connected_box);
     gtk_widget_set_visible(app->connected_sep, FALSE);
 
+    /* Always sync switch from NM state before any early return, so the toggle
+       remains correct even when the WiFi device temporarily disappears from NM
+       (some drivers/targets unregister the device when the radio is turned off).
+       Block state-set to prevent re-entrant calls into wifi_switch_state_set. */
+    gboolean enabled = nm_client_wireless_get_enabled(app->client);
+    g_signal_handlers_block_by_func(app->wifi_switch, wifi_switch_state_set, app);
+    gtk_switch_set_active(GTK_SWITCH(app->wifi_switch), enabled);
+    g_signal_handlers_unblock_by_func(app->wifi_switch, wifi_switch_state_set, app);
+
     app->wifi_dev = find_first_wifi_device(app);
     if (!app->wifi_dev) {
         set_status(app, "No Wi-Fi interface detected");
         return;
     }
-
-    gboolean enabled = nm_client_wireless_get_enabled(app->client);
-    gtk_switch_set_active(GTK_SWITCH(app->wifi_switch), enabled);
 
     if (!enabled) {
         set_status(app, "Wi-Fi is disabled");
