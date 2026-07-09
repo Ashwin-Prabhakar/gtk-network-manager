@@ -394,6 +394,30 @@ static void show_psk_clicked(GtkButton *button, gpointer user_data)
                                            app->cancellable, secrets_cb, app);
 }
 
+static const char INFO_ICON_SVG[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 24 24\""
+    " fill=\"none\" stroke=\"#007aff\" stroke-width=\"2\""
+    " stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<circle cx=\"12\" cy=\"12\" r=\"10\"/>"
+    "<path d=\"M12 16v-4\"/>"
+    "<path d=\"M12 8h.01\"/>"
+    "</svg>";
+
+static GtkWidget *make_info_image(void)
+{
+    GInputStream *stream = g_memory_input_stream_new_from_data(
+        INFO_ICON_SVG, (gssize)(sizeof(INFO_ICON_SVG) - 1), NULL);
+    GdkPixbuf *pb = gdk_pixbuf_new_from_stream_at_scale(stream, 20, 20, TRUE, NULL, NULL);
+    g_object_unref(stream);
+    if (!pb)
+        return gtk_image_new_from_icon_name("dialog-information-symbolic");
+    GdkTexture *tex = gdk_texture_new_for_pixbuf(pb);
+    g_object_unref(pb);
+    GtkWidget *img = gtk_image_new_from_paintable(GDK_PAINTABLE(tex));
+    g_object_unref(tex);
+    return img;
+}
+
 /* Build an iOS-style row for the networks listbox (non-connected APs) */
 static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
 {
@@ -438,9 +462,7 @@ static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
     gtk_box_append(GTK_BOX(hbox), sig_img);
 
     /* Info button (blue ⓘ circle) */
-    GtkWidget *info_img = gtk_image_new_from_icon_name("dialog-information-symbolic");
-    gtk_image_set_pixel_size(GTK_IMAGE(info_img), 20);
-    gtk_widget_add_css_class(info_img, "info-icon");
+    GtkWidget *info_img = make_info_image();
     GtkWidget *info_btn = gtk_button_new();
     gtk_button_set_child(GTK_BUTTON(info_btn), info_img);
     gtk_widget_add_css_class(info_btn, "flat");
@@ -501,9 +523,7 @@ static GtkWidget *make_connected_row_content(App *app, NMAccessPoint *ap)
     gtk_box_append(GTK_BOX(hbox), sig_img);
 
     /* Info button */
-    GtkWidget *info_img = gtk_image_new_from_icon_name("dialog-information-symbolic");
-    gtk_image_set_pixel_size(GTK_IMAGE(info_img), 20);
-    gtk_widget_add_css_class(info_img, "info-icon");
+    GtkWidget *info_img = make_info_image();
     GtkWidget *info_btn = gtk_button_new();
     gtk_button_set_child(GTK_BUTTON(info_btn), info_img);
     gtk_widget_add_css_class(info_btn, "flat");
