@@ -142,7 +142,7 @@ static void show_password_panel(App *app, NMAccessPoint *ap, const char *ssid)
 
     gtk_editable_set_text(GTK_EDITABLE(app->password_entry), "");
     gtk_revealer_set_reveal_child(GTK_REVEALER(app->password_revealer), TRUE);
-    gtk_widget_grab_focus(app->password_entry);
+    g_idle_add((GSourceFunc)gtk_widget_grab_focus, app->password_entry);
 }
 
 static void activate_done_cb(GObject *source, GAsyncResult *res, gpointer user_data)
