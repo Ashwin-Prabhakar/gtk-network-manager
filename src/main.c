@@ -63,11 +63,8 @@ static void schedule_delayed_refresh(App *app, guint ms)
 
 static char *ssid_to_string(GBytes *ssid)
 {
-    if (!ssid)
-        return g_strdup("Hidden Network");
-
     gsize len = 0;
-    const guint8 *data = g_bytes_get_data(ssid, &len);
+    const guint8 *data = ssid ? g_bytes_get_data(ssid, &len) : NULL;
     if (!data || len == 0)
         return g_strdup("Hidden Network");
 
@@ -90,16 +87,7 @@ static const char *security_to_string(NMAccessPoint *ap)
         rsn == NM_802_11_AP_SEC_NONE)
         return "Open";
 
-    if (rsn != NM_802_11_AP_SEC_NONE)
-        return "Secured";
-
-    if (wpa != NM_802_11_AP_SEC_NONE)
-        return "Secured";
-
-    if (flags & NM_802_11_AP_FLAGS_PRIVACY)
-        return "Secured";
-
-    return "Unknown";
+    return "Secured";
 }
 
 /* Lucide WiFi SVGs — row icons use black, badge uses white */
@@ -310,14 +298,26 @@ static void password_connect_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
     App *app = user_data;
-    const char *password = gtk_editable_get_text(GTK_EDITABLE(app->password_entry));
+    const char *raw = gtk_editable_get_text(GTK_EDITABLE(app->password_entry));
 
-    if (!password || password[0] == '\0') {
+    if (!raw || raw[0] == '\0') {
         set_status(app, "Password required");
         return;
     }
 
+    /* WPA-PSK: passphrase must be 8–63 chars, or exactly 64 hex digits (raw PMK) */
+    gsize plen = strlen(raw);
+    if (plen < 8 || (plen > 63 && plen != 64)) {
+        set_status(app, "Password must be 8–63 characters (or a 64-char hex key)");
+        return;
+    }
+
+    /* Copy to a heap buffer we control so we can zero it after use,
+     * reducing the time the secret is live in process memory. */
+    char *password = g_strndup(raw, plen);
     connect_to_ap(app, app->pending_ap, password);
+    memset(password, 0, plen);
+    g_free(password);
     hide_password_panel(app);
 }
 
@@ -381,12 +381,12 @@ static void secrets_cb(GObject *source, GAsyncResult *res, gpointer user_data)
     }
 
     const char *psk = NULL;
+    /* G_VARIANT_TYPE asserts the expected dict type; "&s" is a borrowed pointer
+     * valid only while wifi_sec is alive, so unref only after psk is consumed. */
     GVariant *wifi_sec = g_variant_lookup_value(
-        secrets, NM_SETTING_WIRELESS_SECURITY_SETTING_NAME, NULL);
-    if (wifi_sec) {
+        secrets, NM_SETTING_WIRELESS_SECURITY_SETTING_NAME, G_VARIANT_TYPE("a{sv}"));
+    if (wifi_sec)
         g_variant_lookup(wifi_sec, NM_SETTING_WIRELESS_SECURITY_PSK, "&s", &psk);
-        g_variant_unref(wifi_sec);
-    }
 
     if (psk && psk[0] != '\0') {
         gtk_label_set_text(GTK_LABEL(app->psk_label), psk);
@@ -394,6 +394,7 @@ static void secrets_cb(GObject *source, GAsyncResult *res, gpointer user_data)
     } else {
         set_status(app, "No saved password found for this network");
     }
+    g_clear_pointer(&wifi_sec, g_variant_unref);
     g_variant_unref(secrets);
 }
 
@@ -546,28 +547,30 @@ static GtkWidget *make_leading_icon(NMAccessPoint *ap)
     return spacer;
 }
 
-/* Build an iOS-style row for the networks listbox (non-connected APs) */
-static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
+/* Build an iOS-style info button (blue ⓘ circle) */
+static GtkWidget *make_info_button(void)
 {
-    (void)app;
-    char *ssid = ssid_to_string(nm_access_point_get_ssid(ap));
-    guint8 strength = nm_access_point_get_strength(ap);
-    const char *sec = security_to_string(ap);
-    gboolean is_open = g_strcmp0(sec, "Open") == 0;
+    GtkWidget *btn = gtk_button_new();
+    gtk_button_set_child(GTK_BUTTON(btn), make_info_image());
+    gtk_widget_add_css_class(btn, "flat");
+    gtk_widget_add_css_class(btn, "info-btn");
+    gtk_widget_set_valign(btn, GTK_ALIGN_CENTER);
+    return btn;
+}
 
-    GtkWidget *row = gtk_list_box_row_new();
-
+/* Build the shared horizontal row content box (leading icon, SSID, lock, signal, info).
+ * Takes ownership of the caller-supplied leading widget. */
+static GtkWidget *build_row_hbox(const char *ssid, guint8 strength, gboolean is_open,
+                                  GtkWidget *leading)
+{
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_margin_start(hbox, 16);
     gtk_widget_set_margin_end(hbox, 12);
     gtk_widget_set_margin_top(hbox, 11);
     gtk_widget_set_margin_bottom(hbox, 11);
-    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), hbox);
 
-    /* Leading icon column: hotspot indicator or empty spacer */
-    gtk_box_append(GTK_BOX(hbox), make_leading_icon(ap));
+    gtk_box_append(GTK_BOX(hbox), leading);
 
-    /* SSID label (expands) */
     GtkWidget *ssid_lbl = gtk_label_new(ssid);
     gtk_widget_add_css_class(ssid_lbl, "ssid-label");
     gtk_widget_set_halign(ssid_lbl, GTK_ALIGN_START);
@@ -576,24 +579,25 @@ static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
     gtk_label_set_ellipsize(GTK_LABEL(ssid_lbl), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(hbox), ssid_lbl);
 
-    /* Lock icon (secured networks only) */
-    if (!is_open) {
-        GtkWidget *lock = make_lock_image();
-        gtk_box_append(GTK_BOX(hbox), lock);
-    }
+    if (!is_open)
+        gtk_box_append(GTK_BOX(hbox), make_lock_image());
 
-    /* WiFi signal strength icon */
-    GtkWidget *sig_img = make_signal_image(strength);
-    gtk_box_append(GTK_BOX(hbox), sig_img);
+    gtk_box_append(GTK_BOX(hbox), make_signal_image(strength));
+    gtk_box_append(GTK_BOX(hbox), make_info_button());
 
-    /* Info button (blue ⓘ circle) */
-    GtkWidget *info_img = make_info_image();
-    GtkWidget *info_btn = gtk_button_new();
-    gtk_button_set_child(GTK_BUTTON(info_btn), info_img);
-    gtk_widget_add_css_class(info_btn, "flat");
-    gtk_widget_add_css_class(info_btn, "info-btn");
-    gtk_widget_set_valign(info_btn, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(hbox), info_btn);
+    return hbox;
+}
+
+/* Build an iOS-style row for the networks listbox (non-connected APs) */
+static GtkWidget *make_ap_row(NMAccessPoint *ap)
+{
+    char *ssid = ssid_to_string(nm_access_point_get_ssid(ap));
+    gboolean is_open = g_strcmp0(security_to_string(ap), "Open") == 0;
+
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *hbox = build_row_hbox(ssid, nm_access_point_get_strength(ap),
+                                     is_open, make_leading_icon(ap));
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), hbox);
 
     g_object_set_data_full(G_OBJECT(row), "ap", g_object_ref(ap), g_object_unref);
     gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), TRUE);
@@ -605,50 +609,16 @@ static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
 static GtkWidget *make_connected_row_content(App *app, NMAccessPoint *ap)
 {
     char *ssid = ssid_to_string(nm_access_point_get_ssid(ap));
-    guint8 strength = nm_access_point_get_strength(ap);
-    const char *sec = security_to_string(ap);
-    gboolean is_open = g_strcmp0(sec, "Open") == 0;
-
-    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_widget_set_margin_start(hbox, 16);
-    gtk_widget_set_margin_end(hbox, 12);
-    gtk_widget_set_margin_top(hbox, 11);
-    gtk_widget_set_margin_bottom(hbox, 11);
+    gboolean is_open = g_strcmp0(security_to_string(ap), "Open") == 0;
 
     /* Blue checkmark — pinned to 17px to share the leading icon column */
     GtkWidget *chk_img = gtk_image_new_from_icon_name("object-select-symbolic");
     gtk_image_set_pixel_size(GTK_IMAGE(chk_img), 17);
     gtk_widget_add_css_class(chk_img, "connected-check-icon");
     pin_icon(chk_img);
-    gtk_box_append(GTK_BOX(hbox), chk_img);
 
-    /* SSID — leading icon column already filled by checkmark */
-    GtkWidget *ssid_lbl = gtk_label_new(ssid);
-    gtk_widget_add_css_class(ssid_lbl, "ssid-label");
-    gtk_widget_set_halign(ssid_lbl, GTK_ALIGN_START);
-    gtk_widget_set_valign(ssid_lbl, GTK_ALIGN_CENTER);
-    gtk_widget_set_hexpand(ssid_lbl, TRUE);
-    gtk_label_set_ellipsize(GTK_LABEL(ssid_lbl), PANGO_ELLIPSIZE_END);
-    gtk_box_append(GTK_BOX(hbox), ssid_lbl);
-
-    /* Lock icon */
-    if (!is_open) {
-        GtkWidget *lock = make_lock_image();
-        gtk_box_append(GTK_BOX(hbox), lock);
-    }
-
-    /* WiFi signal icon */
-    GtkWidget *sig_img = make_signal_image(strength);
-    gtk_box_append(GTK_BOX(hbox), sig_img);
-
-    /* Info button */
-    GtkWidget *info_img = make_info_image();
-    GtkWidget *info_btn = gtk_button_new();
-    gtk_button_set_child(GTK_BUTTON(info_btn), info_img);
-    gtk_widget_add_css_class(info_btn, "flat");
-    gtk_widget_add_css_class(info_btn, "info-btn");
-    gtk_widget_set_valign(info_btn, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(hbox), info_btn);
+    GtkWidget *hbox = build_row_hbox(ssid, nm_access_point_get_strength(ap),
+                                     is_open, chk_img);
 
     /* Show Password button for secured connected networks */
     if (!is_open) {
@@ -765,7 +735,7 @@ static void refresh_wifi_list(App *app)
 
     for (guint i = 0; i < unique->len; i++) {
         NMAccessPoint *ap = g_ptr_array_index(unique, i);
-        GtkWidget *row = make_ap_row(app, ap);
+        GtkWidget *row = make_ap_row(ap);
         gtk_list_box_append(GTK_LIST_BOX(app->listbox), row);
     }
 
@@ -899,11 +869,8 @@ static void on_outside_press(GtkGestureClick *gesture, int n_press, double x, do
         hide_password_panel(app);
 }
 
-static void on_window_destroy(GtkWidget *widget, gpointer user_data)
+static void cancel_timers(App *app)
 {
-    (void)widget;
-    App *app = user_data;
-
     if (app->refresh_timer_id) {
         g_source_remove(app->refresh_timer_id);
         app->refresh_timer_id = 0;
@@ -912,6 +879,13 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data)
         g_source_remove(app->delayed_refresh_id);
         app->delayed_refresh_id = 0;
     }
+}
+
+static void on_window_destroy(GtkWidget *widget, gpointer user_data)
+{
+    (void)widget;
+    App *app = user_data;
+    cancel_timers(app);
     g_cancellable_cancel(app->cancellable);
     app->window = NULL;
 }
@@ -1294,14 +1268,7 @@ static void app_shutdown(GApplication *gapp, gpointer user_data)
 {
     (void)gapp;
     App *app = user_data;
-    if (app->refresh_timer_id) {
-        g_source_remove(app->refresh_timer_id);
-        app->refresh_timer_id = 0;
-    }
-    if (app->delayed_refresh_id) {
-        g_source_remove(app->delayed_refresh_id);
-        app->delayed_refresh_id = 0;
-    }
+    cancel_timers(app);
     g_clear_object(&app->cancellable);
     g_clear_object(&app->pending_ap);
     g_clear_object(&app->client);
