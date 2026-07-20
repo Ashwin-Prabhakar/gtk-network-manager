@@ -102,13 +102,48 @@ static const char *security_to_string(NMAccessPoint *ap)
     return "Unknown";
 }
 
-static const char *signal_icon_name(guint8 strength)
-{
-    if (strength > 75) return "network-wireless-signal-excellent-symbolic";
-    if (strength > 50) return "network-wireless-signal-good-symbolic";
-    if (strength > 25) return "network-wireless-signal-ok-symbolic";
-    return "network-wireless-signal-weak-symbolic";
-}
+/* Lucide WiFi SVGs — row icons use black, badge uses white */
+static const char HOTSPOT_SVG[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\""
+    " viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#000000\""
+    " stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<path d=\"M9 17H7A5 5 0 0 1 7 7h2\"/>"
+    "<path d=\"M15 7h2a5 5 0 1 1 0 10h-2\"/>"
+    "<line x1=\"8\" x2=\"16\" y1=\"12\" y2=\"12\"/>"
+    "</svg>";
+
+static const char WIFI_HIGH_SVG[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\""
+    " viewBox=\"4 9 16 13\" fill=\"none\" stroke=\"#000000\""
+    " stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<path d=\"M12 20h.01\"/>"
+    "<path d=\"M5 12.859a10 10 0 0 1 14 0\"/>"
+    "<path d=\"M8.5 16.429a5 5 0 0 1 7 0\"/>"
+    "</svg>";
+
+static const char WIFI_LOW_SVG[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\""
+    " viewBox=\"4 9 16 13\" fill=\"none\" stroke=\"#000000\""
+    " stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<path d=\"M12 20h.01\"/>"
+    "<path d=\"M8.5 16.429a5 5 0 0 1 7 0\"/>"
+    "</svg>";
+
+static const char WIFI_ZERO_SVG[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\""
+    " viewBox=\"4 9 16 13\" fill=\"none\" stroke=\"#000000\""
+    " stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<path d=\"M12 20h.01\"/>"
+    "</svg>";
+
+static const char WIFI_BADGE_SVG[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\""
+    " viewBox=\"5 8 14 14\" fill=\"none\" stroke=\"#ffffff\""
+    " stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<path d=\"M12 20h.01\"/>"
+    "<path d=\"M5 12.859a10 10 0 0 1 14 0\"/>"
+    "<path d=\"M8.5 16.429a5 5 0 0 1 7 0\"/>"
+    "</svg>";
 
 static NMDeviceWifi *find_first_wifi_device(App *app)
 {
@@ -394,8 +429,38 @@ static void show_psk_clicked(GtkButton *button, gpointer user_data)
                                            app->cancellable, secrets_cb, app);
 }
 
+static void networks_header_func(GtkListBoxRow *row, GtkListBoxRow *before,
+                                 gpointer user_data)
+{
+    (void)user_data;
+    if (!before) {
+        gtk_list_box_row_set_header(row, NULL);
+        return;
+    }
+    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_add_css_class(sep, "row-sep");
+    gtk_list_box_row_set_header(row, sep);
+}
+
+static const char LOCK_SVG[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\""
+    " viewBox=\"2 1 20 22\" fill=\"none\" stroke=\"#000000\""
+    " stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<rect width=\"18\" height=\"11\" x=\"3\" y=\"11\" rx=\"2\" ry=\"2\"/>"
+    "<path d=\"M7 11V7a5 5 0 0 1 10 0v4\"/>"
+    "</svg>";
+
+static const char KEY_SVG[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\""
+    " viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#000000\""
+    " stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+    "<path d=\"M12.4 2.7a2.5 2.5 0 0 1 3.4 0l5.5 5.5a2.5 2.5 0 0 1 0 3.4l-3.7 3.7a2.5 2.5 0 0 1-3.4 0L8.7 9.8a2.5 2.5 0 0 1 0-3.4z\"/>"
+    "<path d=\"m14 7 3 3\"/>"
+    "<path d=\"m9.4 10.6-6.814 6.814A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814\"/>"
+    "</svg>";
+
 static const char INFO_ICON_SVG[] =
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 24 24\""
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\""
     " fill=\"none\" stroke=\"#007aff\" stroke-width=\"2\""
     " stroke-linecap=\"round\" stroke-linejoin=\"round\">"
     "<circle cx=\"12\" cy=\"12\" r=\"10\"/>"
@@ -403,19 +468,82 @@ static const char INFO_ICON_SVG[] =
     "<path d=\"M12 8h.01\"/>"
     "</svg>";
 
-static GtkWidget *make_info_image(void)
+static GtkWidget *make_svg_image(const char *svg_data, int size)
 {
     GInputStream *stream = g_memory_input_stream_new_from_data(
-        INFO_ICON_SVG, (gssize)(sizeof(INFO_ICON_SVG) - 1), NULL);
-    GdkPixbuf *pb = gdk_pixbuf_new_from_stream_at_scale(stream, 20, 20, TRUE, NULL, NULL);
+        svg_data, (gssize)strlen(svg_data), NULL);
+    GdkPixbuf *pb = gdk_pixbuf_new_from_stream_at_scale(stream, size, size, TRUE, NULL, NULL);
     g_object_unref(stream);
     if (!pb)
-        return gtk_image_new_from_icon_name("dialog-information-symbolic");
+        return NULL;
     GdkTexture *tex = gdk_texture_new_for_pixbuf(pb);
     g_object_unref(pb);
     GtkWidget *img = gtk_image_new_from_paintable(GDK_PAINTABLE(tex));
     g_object_unref(tex);
     return img;
+}
+
+static GtkWidget *pin_icon(GtkWidget *img)
+{
+    gtk_widget_set_size_request(img, 17, 17);
+    gtk_widget_set_halign(img, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(img, GTK_ALIGN_CENTER);
+    return img;
+}
+
+static GtkWidget *make_lock_image(void)
+{
+    GtkWidget *img = make_svg_image(LOCK_SVG, 17);
+    return pin_icon(img ? img : gtk_image_new_from_icon_name("changes-prevent-symbolic"));
+}
+
+static GtkWidget *make_info_image(void)
+{
+    GtkWidget *img = make_svg_image(INFO_ICON_SVG, 17);
+    return pin_icon(img ? img : gtk_image_new_from_icon_name("dialog-information-symbolic"));
+}
+
+static GtkWidget *make_signal_image(guint8 strength)
+{
+    const char *svg = strength > 50 ? WIFI_HIGH_SVG
+                    : strength > 25 ? WIFI_LOW_SVG
+                    : WIFI_ZERO_SVG;
+    GtkWidget *img = make_svg_image(svg, 17);
+    return pin_icon(img ? img : gtk_image_new_from_icon_name("network-wireless-signal-weak-symbolic"));
+}
+
+static gboolean ap_is_personal_hotspot(NMAccessPoint *ap)
+{
+    GBytes *raw = nm_access_point_get_ssid(ap);
+    if (!raw) return FALSE;
+    char *ssid = ssid_to_string(raw);
+    if (!ssid) return FALSE;
+    char *lower = g_ascii_strdown(ssid, -1);
+    g_free(ssid);
+    gboolean match = strstr(lower, "iphone")   ||
+                     strstr(lower, "ipad")      ||
+                     strstr(lower, "android")   ||
+                     strstr(lower, "hotspot")   ||
+                     strstr(lower, "galaxy")    ||
+                     strstr(lower, "pixel");
+    g_free(lower);
+    return match;
+}
+
+static GtkWidget *make_hotspot_image(void)
+{
+    GtkWidget *img = make_svg_image(HOTSPOT_SVG, 17);
+    return pin_icon(img ? img : gtk_image_new_from_icon_name("network-cellular-symbolic"));
+}
+
+static GtkWidget *make_leading_icon(NMAccessPoint *ap)
+{
+    if (ap_is_personal_hotspot(ap))
+        return make_hotspot_image();
+    /* Empty spacer keeps SSID text aligned with hotspot/connected rows */
+    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_size_request(spacer, 17, 17);
+    return spacer;
 }
 
 /* Build an iOS-style row for the networks listbox (non-connected APs) */
@@ -436,6 +564,9 @@ static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
     gtk_widget_set_margin_bottom(hbox, 11);
     gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), hbox);
 
+    /* Leading icon column: hotspot indicator or empty spacer */
+    gtk_box_append(GTK_BOX(hbox), make_leading_icon(ap));
+
     /* SSID label (expands) */
     GtkWidget *ssid_lbl = gtk_label_new(ssid);
     gtk_widget_add_css_class(ssid_lbl, "ssid-label");
@@ -447,18 +578,12 @@ static GtkWidget *make_ap_row(App *app, NMAccessPoint *ap)
 
     /* Lock icon (secured networks only) */
     if (!is_open) {
-        GtkWidget *lock = gtk_image_new_from_icon_name("changes-prevent-symbolic");
-        gtk_image_set_pixel_size(GTK_IMAGE(lock), 14);
-        gtk_widget_add_css_class(lock, "row-icon");
-        gtk_widget_set_valign(lock, GTK_ALIGN_CENTER);
+        GtkWidget *lock = make_lock_image();
         gtk_box_append(GTK_BOX(hbox), lock);
     }
 
     /* WiFi signal strength icon */
-    GtkWidget *sig_img = gtk_image_new_from_icon_name(signal_icon_name(strength));
-    gtk_image_set_pixel_size(GTK_IMAGE(sig_img), 18);
-    gtk_widget_add_css_class(sig_img, "row-icon");
-    gtk_widget_set_valign(sig_img, GTK_ALIGN_CENTER);
+    GtkWidget *sig_img = make_signal_image(strength);
     gtk_box_append(GTK_BOX(hbox), sig_img);
 
     /* Info button (blue ⓘ circle) */
@@ -490,14 +615,14 @@ static GtkWidget *make_connected_row_content(App *app, NMAccessPoint *ap)
     gtk_widget_set_margin_top(hbox, 11);
     gtk_widget_set_margin_bottom(hbox, 11);
 
-    /* Blue checkmark on the left */
+    /* Blue checkmark — pinned to 17px to share the leading icon column */
     GtkWidget *chk_img = gtk_image_new_from_icon_name("object-select-symbolic");
-    gtk_image_set_pixel_size(GTK_IMAGE(chk_img), 18);
+    gtk_image_set_pixel_size(GTK_IMAGE(chk_img), 17);
     gtk_widget_add_css_class(chk_img, "connected-check-icon");
-    gtk_widget_set_valign(chk_img, GTK_ALIGN_CENTER);
+    pin_icon(chk_img);
     gtk_box_append(GTK_BOX(hbox), chk_img);
 
-    /* SSID */
+    /* SSID — leading icon column already filled by checkmark */
     GtkWidget *ssid_lbl = gtk_label_new(ssid);
     gtk_widget_add_css_class(ssid_lbl, "ssid-label");
     gtk_widget_set_halign(ssid_lbl, GTK_ALIGN_START);
@@ -508,18 +633,12 @@ static GtkWidget *make_connected_row_content(App *app, NMAccessPoint *ap)
 
     /* Lock icon */
     if (!is_open) {
-        GtkWidget *lock = gtk_image_new_from_icon_name("changes-prevent-symbolic");
-        gtk_image_set_pixel_size(GTK_IMAGE(lock), 14);
-        gtk_widget_add_css_class(lock, "row-icon");
-        gtk_widget_set_valign(lock, GTK_ALIGN_CENTER);
+        GtkWidget *lock = make_lock_image();
         gtk_box_append(GTK_BOX(hbox), lock);
     }
 
     /* WiFi signal icon */
-    GtkWidget *sig_img = gtk_image_new_from_icon_name(signal_icon_name(strength));
-    gtk_image_set_pixel_size(GTK_IMAGE(sig_img), 18);
-    gtk_widget_add_css_class(sig_img, "row-icon");
-    gtk_widget_set_valign(sig_img, GTK_ALIGN_CENTER);
+    GtkWidget *sig_img = make_signal_image(strength);
     gtk_box_append(GTK_BOX(hbox), sig_img);
 
     /* Info button */
@@ -533,8 +652,10 @@ static GtkWidget *make_connected_row_content(App *app, NMAccessPoint *ap)
 
     /* Show Password button for secured connected networks */
     if (!is_open) {
-        GtkWidget *pw_img = gtk_image_new_from_icon_name("dialog-password-symbolic");
-        gtk_image_set_pixel_size(GTK_IMAGE(pw_img), 16);
+        GtkWidget *pw_img = make_svg_image(KEY_SVG, 24);
+        if (!pw_img)
+            pw_img = gtk_image_new_from_icon_name("dialog-password-symbolic");
+        pin_icon(pw_img);
         GtkWidget *show_btn = gtk_button_new();
         gtk_button_set_child(GTK_BUTTON(show_btn), pw_img);
         gtk_widget_add_css_class(show_btn, "flat");
@@ -817,16 +938,16 @@ static void apply_css(void)
         ".wifi-badge {"
         "  background: #007aff;"
         "  border-radius: 14px;"
-        "  min-width: 60px; max-width: 60px;"
-        "  min-height: 60px; max-height: 60px; }"
+        "  min-width: 60px;"
+        "  min-height: 60px; }"
         ".wifi-badge-icon { color: #ffffff; }"
 
         /* Typography */
-        ".wifi-title { font-size: 22px; font-weight: 700; color: #1c1c1e; }"
+        ".wifi-title { font-size: 24px; font-weight: 700; color: #1c1c1e; }"
         ".wifi-desc  { font-size: 15px; color: #6c6c70; }"
-        ".toggle-label { font-size: 17px; color: #1c1c1e; }"
-        ".ssid-label   { font-size: 17px; color: #1c1c1e; }"
-        ".section-header { font-size: 13px; color: #6c6c70; }"
+        ".toggle-label { font-size: 22px; color: #1c1c1e; }"
+        ".ssid-label   { font-size: 20px; color: #1c1c1e; }"
+        ".section-header { font-size: 17px; color: #6c6c70; }"
         ".status-label   { font-size: 13px; color: #6c6c70; }"
         ".muted { font-size: 14px; color: #6c6c70; }"
         ".dialog-title { font-size: 20px; font-weight: 600; color: #1c1c1e; }"
@@ -848,27 +969,20 @@ static void apply_css(void)
         /* Transparent background on the list itself; rows carry the white card look.
            First/last rows get rounded corners — this is the only reliable GTK4 approach
            since overflow:hidden does not clip child widget backgrounds. */
-        ".networks-list { background: transparent; }"
+        ".networks-list { background: #ffffff; border-radius: 13px; }"
         ".networks-list > row {"
-        "    background: #ffffff; padding: 0; border: none; min-height: 0;"
-        "    border-bottom: 1px solid rgba(0,0,0,0.1); }"
-        ".networks-list > row:first-child {"
-        "    border-top-left-radius: 13px;"
-        "    border-top-right-radius: 13px; }"
-        ".networks-list > row:last-child {"
-        "    border-bottom: none;"
-        "    border-bottom-left-radius: 13px;"
-        "    border-bottom-right-radius: 13px; }"
+        "    background: transparent; padding: 0; border: none; min-height: 0; }"
         ".networks-list > row:hover { background: #f9f9f9; }"
         ".networks-list > row:active { background: #e5e5ea; }"
         ".networks-list > row:selected,"
-        ".networks-list > row:focus { background: #ffffff; outline: none; }"
+        ".networks-list > row:focus { background: transparent; outline: none; }"
+        ".row-sep { background: rgba(0,0,0,0.1); min-height: 1px; margin-left: 16px; }"
 
         /* Row icons */
         ".connected-check-icon { color: #007aff; }"
         ".row-icon { color: #3c3c43; opacity: 0.6; }"
         ".info-icon { color: #007aff; }"
-        ".info-btn { padding: 2px; min-width: 30px; min-height: 30px;"
+        ".info-btn { padding: 0; min-width: 17px; min-height: 17px;"
         "            border-radius: 360px; }"
         ".info-btn:hover { background: rgba(0,122,255,0.08); }"
 
@@ -950,13 +1064,13 @@ static void build_ui(App *app)
     gtk_widget_set_halign(badge, GTK_ALIGN_START);
     gtk_box_append(GTK_BOX(header), badge);
 
-    GtkWidget *badge_icon = gtk_image_new_from_icon_name("network-wireless-symbolic");
-    gtk_image_set_pixel_size(GTK_IMAGE(badge_icon), 34);
-    gtk_widget_add_css_class(badge_icon, "wifi-badge-icon");
-    gtk_widget_set_margin_top(badge_icon, 13);
-    gtk_widget_set_margin_bottom(badge_icon, 13);
-    gtk_widget_set_margin_start(badge_icon, 13);
-    gtk_widget_set_margin_end(badge_icon, 13);
+    GtkWidget *badge_icon = make_svg_image(WIFI_BADGE_SVG, 116);
+    if (!badge_icon)
+        badge_icon = gtk_image_new_from_icon_name("network-wireless-symbolic");
+    gtk_widget_set_halign(badge_icon, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(badge_icon, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(badge_icon, TRUE);
+    gtk_widget_set_vexpand(badge_icon, TRUE);
     gtk_box_append(GTK_BOX(badge), badge_icon);
 
     /* Title */
@@ -1041,6 +1155,7 @@ static void build_ui(App *app)
     app->listbox = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(app->listbox), GTK_SELECTION_NONE);
     gtk_list_box_set_show_separators(GTK_LIST_BOX(app->listbox), FALSE);
+    gtk_list_box_set_header_func(GTK_LIST_BOX(app->listbox), networks_header_func, NULL, NULL);
     gtk_widget_remove_css_class(app->listbox, "view");
     gtk_widget_add_css_class(app->listbox, "networks-list");
     gtk_widget_set_name(app->listbox, "ap-listbox");
